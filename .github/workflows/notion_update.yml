@@ -1,6 +1,11 @@
 name: Update Notion Statuses
 
-on: [push]
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - staging
 
 jobs:
   notion_update_job:
