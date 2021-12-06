@@ -8,14 +8,16 @@ try {
     GITHUB_REF,
   } = process.env
 
-  if (GITHUB_REF === 'refs/heads/master') {
-    _updateNotionStatuses('master')
-  } else if (GITHUB_REF === 'refs/heads/main') {
-    _updateNotionStatuses('main')
-  } else if (GITHUB_REF === 'refs/heads/staging') {
-    _updateNotionStatuses('staging')
-  } else if (GITHUB_REF === 'refs/heads/dev') {
-    _updateNotionStatuses('dev')
+  const allowedBranches = [
+    'refs/heads/master',
+    'refs/heads/main',
+    'refs/heads/staging',
+    'refs/heads/dev',
+  ]
+
+  if (allowedBranches.indexOf(GITHUB_REF)  !== -1) {
+    const branchName = GITHUB_REF.split('/').pop()
+    _updateNotionStatuses(branchName)
   }
 } catch (error) {
   core.setFailed(error.message)
