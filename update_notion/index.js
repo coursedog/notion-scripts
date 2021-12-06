@@ -10,6 +10,8 @@ try {
 
   if (GITHUB_REF === 'refs/heads/master') {
     _updateNotionStatuses('master')
+  } else if (GITHUB_REF === 'refs/heads/main') {
+    _updateNotionStatuses('main')
   } else if (GITHUB_REF === 'refs/heads/staging') {
     _updateNotionStatuses('staging')
   } else if (GITHUB_REF === 'refs/heads/dev') {
@@ -46,7 +48,6 @@ async function _updateNotionStatuses (branch) {
   })
 
   const repositoryName = GITHUB_REPOSITORY.split('/').pop()
-  console.log(repositoryName)
   
   // Get most recent commit to branch
   const { data } = await octokit.rest.repos.getCommit({
@@ -65,9 +66,14 @@ async function _updateNotionStatuses (branch) {
 
   switch (branch) {
     case 'master':
+    case 'main':
       if (commitMessage.includes('from coursedog/staging')) {
         // Update all tasks that are in Completed Staging to Completed Prod
         notionUtil.updateByStatus('Completed (Staging)', 'Completed (Production)')
+      } else if (commitMessage.match(/#+[0-9]/)) {
+        // direct from open PR to staging
+        const prNumber = commitMessage.split('#')[1].replace(/\D/g, '')
+        notionUtil.updateByPR(`${repositoryName}/pull/${prNumber}`, 'Completed (Production)')
       }
       break
     case 'staging':
