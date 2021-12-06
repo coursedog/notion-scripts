@@ -46,6 +46,7 @@ async function _updateNotionStatuses (branch) {
   })
 
   const repositoryName = GITHUB_REPOSITORY.split('/').pop()
+  console.log(repositoryName)
   
   // Get most recent commit to branch
   const { data } = await octokit.rest.repos.getCommit({
