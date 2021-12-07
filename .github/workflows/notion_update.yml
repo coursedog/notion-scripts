@@ -16,6 +16,13 @@ jobs:
       # you must check out the repository
       - name: Checkout
         uses: actions/checkout@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v1
+        with:
+          node-version: '16.x'
+      - run: npm ci
+
       - name: Update Notion Task
         uses: ./update_notion # Uses an action in the root directory
         id: update_notion
