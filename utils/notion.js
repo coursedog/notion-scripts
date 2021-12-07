@@ -78,7 +78,7 @@ class Notion {
           {
             property: this.labels.GITHUB_PR,
             text: {
-              ends_with: pr,
+              starts_with: pr,
             },
           },
           {
