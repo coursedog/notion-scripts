@@ -14,6 +14,24 @@ try {
     'refs/heads/staging',
     'refs/heads/dev',
   ]
+  const {
+    GITHUB_TOKEN,
+  } = process.env
+
+  console.log(GITHUB_TOKEN)
+
+  const octokit = new Octokit({
+    auth: GITHUB_TOKEN,
+  })
+
+  // Get most recent commit to branch
+  octokit.rest.repos.getCommit({
+    owner: 'coursedog',
+    repo: 'notion-scripts',
+    ref: 'main',
+    perPage: 1,
+    page: 1,
+  }).then(console.log)
 
   if (allowedBranches.indexOf(GITHUB_REF)  !== -1) {
     const branchName = GITHUB_REF.split('/').pop()
@@ -35,6 +53,8 @@ async function _updateNotionStatuses (branch) {
     GITHUB_REPOSITORY,
     GITHUB_TOKEN,
   } = process.env
+
+  console.log(GITHUB_TOKEN)
 
   const octokit = new Octokit({
     auth: GITHUB_TOKEN,
