@@ -9,6 +9,10 @@ inputs:
     description: 'Token to identify the task board in which the change is going to happen'
     required: true
     default: ''
+  GITHUB_TOKEN:  # id of input
+    description: 'GitHub Token to read the recent commit message in the repository'
+    required: true
+    default: ''
 runs:
   using: 'node16'
   main: 'index.js'
