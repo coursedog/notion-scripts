@@ -14,24 +14,6 @@ try {
     'refs/heads/staging',
     'refs/heads/dev',
   ]
-  const {
-    GITHUB_TOKEN,
-  } = process.env
-
-  console.log(GITHUB_TOKEN)
-
-  const octokit = new Octokit({
-    auth: GITHUB_TOKEN,
-  })
-
-  // Get most recent commit to branch
-  octokit.rest.repos.getCommit({
-    owner: 'coursedog',
-    repo: 'notion-scripts',
-    ref: 'main',
-    perPage: 1,
-    page: 1,
-  }).then(console.log)
 
   if (allowedBranches.indexOf(GITHUB_REF)  !== -1) {
     const branchName = GITHUB_REF.split('/').pop()
@@ -45,7 +27,7 @@ try {
  * Function to update the status of the tasks based on
  * the recent commit is getting merged to which branch
  *
- * @param {'dev' | 'staging' | 'master' } branch Name of the branch to which the commit is getting merged to
+ * @param {'main' | 'dev' | 'staging' | 'master' } branch Name of the branch to which the commit is getting merged to
  */
 async function _updateNotionStatuses (branch) {
 
@@ -53,8 +35,6 @@ async function _updateNotionStatuses (branch) {
     GITHUB_REPOSITORY,
     GITHUB_TOKEN,
   } = process.env
-
-  console.log(GITHUB_TOKEN)
 
   const octokit = new Octokit({
     auth: GITHUB_TOKEN,
