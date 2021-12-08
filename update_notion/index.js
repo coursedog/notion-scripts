@@ -34,7 +34,6 @@ async function _updateNotionStatuses (branch) {
   const {
     GITHUB_REPOSITORY,
     GITHUB_TOKEN,
-    GITHUB_OWNER,
   } = process.env
 
   const octokit = new Octokit({
@@ -49,11 +48,11 @@ async function _updateNotionStatuses (branch) {
     databaseToken: NOTION_DATABASE_TOKEN,
   })
 
-  const repositoryName = GITHUB_REPOSITORY.split('/').pop()
+  const [ githubOwner, repositoryName ] = GITHUB_REPOSITORY.split('/')
   
   // Get most recent commit to branch
   const { data } = await octokit.rest.repos.getCommit({
-    owner: GITHUB_OWNER,
+    owner: githubOwner,
     repo: repositoryName,
     ref: branch,
     perPage: 1,
