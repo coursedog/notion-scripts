@@ -27,7 +27,7 @@ try {
  * Function to update the status of the tasks based on
  * the recent commit is getting merged to which branch
  *
- * @param {'dev' | 'staging' | 'master' } branch Name of the branch to which the commit is getting merged to
+ * @param {'main' | 'dev' | 'staging' | 'master' } branch Name of the branch to which the commit is getting merged to
  */
 async function _updateNotionStatuses (branch) {
 

@@ -26,7 +26,8 @@ jobs:
       - name: Update Notion Task
         uses: ./update_notion # Uses an action in the root directory
         id: update_notion
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_TOKEN: ${{ secrets.NOTION_DATABASE_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
