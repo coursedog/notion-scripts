@@ -54,7 +54,7 @@ async function _updateNotionStatuses (branch) {
   // Get most recent commit to branch
   const { data } = await octokit.rest.repos.getCommit({
     owner: GITHUB_OWNER,
-    repo: GITHUB_REPOSITORY,
+    repo: repositoryName,
     ref: branch,
     perPage: 1,
     page: 1,
