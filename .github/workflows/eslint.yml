@@ -1,0 +1,54 @@
+# This is a basic workflow to help you get started with Actions
+name: Lint
+
+# Controls when the action will run. Triggers the workflow on push or pull request
+# events but on dev and staging branches
+on:
+  pull_request:
+    branches:
+      - main
+      - 'feature/**'
+      - 'features/**'
+  push:
+    branches:
+      - main
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  prepare:
+    name: Prepare & Cleanup Previous Runs
+    if: always()
+    runs-on: ubuntu-latest
+    outputs:
+      commit_message: ${{ steps.get_message.outputs.commit_message }}
+
+    steps:
+    - uses: actions/checkout@v1
+    - uses: rokroskar/workflow-run-cleanup-action@v0.2.2
+      env:
+        GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+    - id: get_message
+      name: Set Commit Message
+      run: echo ::set-output name=commit_message::$(git log --format=%B -n 1 ${{ github.event.after }})
+    - name: Show Commit Message
+      run: echo "${{ steps.get_message.outputs.commit_message }}"
+
+  lint-and-units:
+    name: ESLint
+    needs: prepare
+    timeout-minutes: 45
+    if: (github.event.pull_request.draft == false) && !startsWith(github.head_ref, 'tech') && !startsWith(github.head_ref, 'doc') && !contains(needs.prepare.outputs.commit_message, '[skip ci]')
+    # The type of runner that the job will run on
+    runs-on: ubuntu-18.04
+    steps:
+    - name: Show Commit Message
+      run: echo "${{ needs.prepare.outputs.commit_message }}"
+    # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+    - uses: actions/checkout@v2
+    - name: Use Node.js
+      uses: actions/setup-node@v1
+      with:
+        node-version: '16.x'
+    - name: Run ESLint
+      if: always()
+      run: npm run lint
