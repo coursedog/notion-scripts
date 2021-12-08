@@ -29,3 +29,4 @@ jobs:
         with:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_TOKEN: ${{ secrets.NOTION_DATABASE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
