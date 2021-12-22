@@ -24,9 +24,13 @@ try {
 }
 
 function extractPrNumber (commitMessage) {
-  return commitMessage
-    .split('(#')[1]
-    .split(')')[0]
+  const match = commitMessage
+    .match(/#[0-9]{4}/)
+
+  if (match) {
+    return commitMessage.substring(match.index + 1, match.index + 5)
+  }
+  return undefined
 }
 
 /**
@@ -80,6 +84,7 @@ async function _updateNotionStatuses (branch) {
       } else if (commitMessage.match(/#+[0-9]/)) {
         // direct from open PR to staging
         const prNumber = extractPrNumber(commitMessage)
+        if (!prNumber) return
         notionUtil.updateByPR(`${repositoryName}/pull/${prNumber}`, 'Completed (Production)')
       }
       break
@@ -90,6 +95,7 @@ async function _updateNotionStatuses (branch) {
       } else if (commitMessage.match(/#+[0-9]/)) {
         // direct from open PR to staging
         const prNumber = extractPrNumber(commitMessage)
+        if (!prNumber) return
         notionUtil.updateByPR(`${repositoryName}/pull/${prNumber}`, 'Completed (Staging)')
       }
       break
@@ -97,6 +103,7 @@ async function _updateNotionStatuses (branch) {
       if (commitMessage.match(/#+[0-9]/)) {
         // direct from open PR to dev
         const prNumber = extractPrNumber(commitMessage)
+        if (!prNumber) return
         notionUtil.updateByPR(`${repositoryName}/pull/${prNumber}`, 'Completed (Dev)')
       }
       break
