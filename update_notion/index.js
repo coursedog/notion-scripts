@@ -25,10 +25,10 @@ try {
 
 function extractPrNumber (commitMessage) {
   const match = commitMessage
-    .match(/#[0-9]{4}/)
+    .match(/#[0-9]{1,4}/)
 
-  if (match) {
-    return commitMessage.substring(match.index + 1, match.index + 5)
+  if (match && match.length) {
+    return match.substring(1)
   }
   return undefined
 }
