@@ -1,18 +1,19 @@
 const fs = require('fs')
-const { Client }= require('@notionhq/client')
+const { Client } = require('@notionhq/client')
 
 class Notion {
   constructor ({ apiKey, databaseToken, testDatabase }) {
     // Retrieving all the input parameters relevant to notion
     this.notionDatabaseToken = databaseToken
     this.testDatabase = testDatabase
-      
+
     // Initializing the notion client
     this.client = new Client({ auth: apiKey })
     this.labels = {
       GITHUB_PR: 'GitHub PR',
       STATUS: 'Status',
       DATE_COMPLETED: 'Date Completed',
+      PR_NUMBER: 'PR Number',
     }
   }
 
@@ -62,6 +63,69 @@ class Notion {
       })
       console.log('Updated', updatedTasks)
     }
+  }
+
+  async getPageById (pageId) {
+    return this.client.pages.retrieve({
+      page_id: pageId,
+    })
+  }
+
+  async getPageByPRNumber (prNumber) {
+    const databaseId = this.notionDatabaseToken
+    const listOfTasks = await this.client.databases.query({
+      database_id: databaseId,
+      filter: {
+        and: [
+          {
+            property: this.labels.PR_NUMBER,
+            number: {
+              equals: prNumber,
+            },
+          },
+        ],
+      },
+    })
+    return listOfTasks.results?.[0]
+  }
+
+  async getTaskByGithubPRInput (prLink) {
+    const databaseId = this.notionDatabaseToken
+
+    const listOfTasks = await this.client.databases.query({
+      database_id: databaseId,
+      filter: {
+        and: [
+          {
+            property: this.labels.GITHUB_PR,
+            text: {
+              contains: prLink,
+            },
+          },
+        ],
+      },
+    })
+
+    return listOfTasks
+  }
+
+  async updateTaskStatusById (taskId, newStatus) {
+    const updatedTasks = await this.client.pages.update({
+      page_id: taskId,
+      properties: {
+        [this.labels.STATUS]: {
+          select: {
+            name: newStatus,
+          },
+        },
+        [this.labels.DATE_COMPLETED]: {
+          date: {
+            start: new Date().toISOString(),
+          },
+        },
+      },
+    })
+    console.log('Updated', updatedTasks)
   }
 
   /**
@@ -173,7 +237,7 @@ class Notion {
       ],
     })
   }
-  
+
   /**
    * Function to update an existing feature block
    *
@@ -217,7 +281,7 @@ class Notion {
         },
       },
     })
-  
+
     const pageBlocks = await this.client.blocks.children.list({
       block_id: card.id,
       page_size: 100,
@@ -226,9 +290,9 @@ class Notion {
     const dividerIndex = pageBlocks.results
       .reverse()
       .findIndex(block => block.type === 'unsupported')
-  
+
     const blocksToDelete = pageBlocks.results.slice(0, dividerIndex)
-  
+
     // NOTE: Delete all blocks after the last unsupported block (likely the divider)
     if (blocksToDelete.length) {
       for (const block of blocksToDelete) {
@@ -237,7 +301,7 @@ class Notion {
         })
       }
     }
-  
+
     // NOTE: Restore the feature block
     await this.client.blocks.children.append({
       block_id: card.id,
@@ -261,7 +325,7 @@ class Notion {
    * @returns {String} Name of the product which is to be used to tag the file
    */
   __getProduct (filePath) {
-    
+
     const {
       GITHUB_REPOSITORY,
     } = process.env
@@ -358,7 +422,7 @@ class Notion {
       })
     }
   }
-  
+
 }
 
 module.exports = Notion
