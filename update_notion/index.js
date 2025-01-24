@@ -89,11 +89,7 @@ async function _updateNotionStatuses (branch) {
       }
       break
     case 'staging':
-      if (commitMessage.includes('from coursedog/dev')) {
-        // Update all tasks that are in Completed Dev to Completed Staging
-        notionUtil.updateByStatus('Completed (Dev)', 'Completed (Staging)')
-      } else if (commitMessage.match(/#+[0-9]/)) {
-        // direct from open PR to staging
+      if (commitMessage.match(/#+[0-9]/)) {
         const prNumber = extractPrNumber(commitMessage)
         if (!prNumber) return
         notionUtil.updateByPR(`${repositoryName}/pull/${prNumber}`, 'Completed (Staging)')
@@ -104,7 +100,7 @@ async function _updateNotionStatuses (branch) {
         // direct from open PR to dev
         const prNumber = extractPrNumber(commitMessage)
         if (!prNumber) return
-        notionUtil.updateByPR(`${repositoryName}/pull/${prNumber}`, 'Completed (Dev)')
+        notionUtil.updateByPR(`${repositoryName}/pull/${prNumber}`, 'Completed (Staging)')
       }
       break
   
