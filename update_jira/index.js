@@ -1,8 +1,6 @@
 const core = require('@actions/core')
 const { Octokit } = require('@octokit/rest')
-
 const Jira = require('./../utils/jira')
-const { handlePullRequestEvent } = require('./../utils/pr-handlers')
 
 async function run() {
   try {
@@ -150,5 +148,82 @@ async function _updateJiraStatuses(branch) {
 
     default:
       break
+  }
+}
+
+/**
+ * Extract Jira issue keys from PR title or body
+ * @param {Object} pullRequest - GitHub PR object
+ * @returns {Array<string>} Array of Jira issue keys
+ */
+function extractJiraIssueKeys(pullRequest) {
+  const jiraKeyPattern = /[A-Z]+-[0-9]+/g
+  const keys = new Set()
+
+  if (pullRequest.title) {
+    const titleMatches = pullRequest.title.match(jiraKeyPattern)
+    if (titleMatches) {
+      titleMatches.forEach(key => keys.add(key))
+    }
+  }
+
+  if (pullRequest.body) {
+    const bodyMatches = pullRequest.body.match(jiraKeyPattern)
+    if (bodyMatches) {
+      bodyMatches.forEach(key => keys.add(key))
+    }
+  }
+
+  return Array.from(keys)
+}
+
+/**
+ * Handle PR-specific Jira updates
+ * @param {Object} eventData - GitHub event data
+ * @param {Jira} jiraUtil - Jira utility instance
+ */
+async function handlePullRequestEvent(eventData, jiraUtil) {
+  const { action, pull_request } = eventData
+
+  const issueKeys = extractJiraIssueKeys(pull_request)
+  if (issueKeys.length === 0) {
+    console.log('No Jira issue keys found in PR')
+    return
+  }
+
+  console.log(`Found Jira issues: ${issueKeys.join(', ')}`)
+
+  let targetStatus = null
+  const targetBranch = pull_request.base.ref
+
+  switch (action) {
+    case 'opened':
+    case 'reopened':
+      targetStatus = 'In Progress'
+      break
+    case 'ready_for_review':
+      targetStatus = 'Code Review'
+      break
+    case 'closed':
+      if (pull_request.merged) {
+        targetStatus = statusMap[targetBranch] || 'Done'
+      } else {
+        console.log('PR closed without merging, skipping status update')
+        return
+      }
+      break
+  }
+
+  if (targetStatus) {
+    for (const issueKey of issueKeys) {
+      try {
+        await jiraUtil.transitionIssue(issueKey, targetStatus)
+
+        const prComment = `Pull Request ${action}: [PR #${pull_request.number}|${pull_request.html_url}]`
+        await jiraUtil.addComment(issueKey, prComment)
+      } catch (error) {
+        console.error(`Failed to update ${issueKey}:`, error.message)
+      }
+    }
   }
 }
