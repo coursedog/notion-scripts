@@ -1,20 +1,39 @@
-const axios = require('axios')
-
 class Jira {
   constructor({ baseUrl, email, apiToken, projectKey }) {
     this.baseUrl = baseUrl
     this.email = email
     this.apiToken = apiToken
     this.projectKey = projectKey
+    this.baseURL = `${baseUrl}/rest/api/3`
+    this.headers = {
+      'Authorization': `Basic ${Buffer.from(`${email}:${apiToken}`).toString('base64')}`,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json'
+    }
+  }
 
-    this.client = axios.create({
-      baseURL: `${baseUrl}/rest/api/3`,
+  /**
+   * Make an authenticated request to Jira API
+   * @param {string} endpoint - API endpoint
+   * @param {Object} options - Fetch options
+   * @returns {Promise<any>} Response data
+   */
+  async request(endpoint, options = {}) {
+    const url = `${this.baseURL}${endpoint}`
+    const response = await fetch(url, {
+      ...options,
       headers: {
-        'Authorization': `Basic ${Buffer.from(`${email}:${apiToken}`).toString('base64')}`,
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
+        ...this.headers,
+        ...options.headers
       }
     })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`Jira API error: ${response.status} ${response.statusText} - ${errorText}`)
+    }
+
+    return response.json()
   }
 
   /**
@@ -24,8 +43,8 @@ class Jira {
    */
   async getTransitions(issueKey) {
     try {
-      const response = await this.client.get(`/issue/${issueKey}/transitions`)
-      return response.data.transitions
+      const data = await this.request(`/issue/${issueKey}/transitions`)
+      return data.transitions
     } catch (error) {
       console.error(`Error getting transitions for ${issueKey}:`, error.message)
       throw error
@@ -49,10 +68,13 @@ class Jira {
         return false
       }
 
-      await this.client.post(`/issue/${issueKey}/transitions`, {
-        transition: {
-          id: transition.id
-        }
+      await this.request(`/issue/${issueKey}/transitions`, {
+        method: 'POST',
+        body: JSON.stringify({
+          transition: {
+            id: transition.id
+          }
+        })
       })
 
       console.log(`Successfully transitioned ${issueKey} to ${targetStatus}`)
@@ -75,13 +97,16 @@ class Jira {
         jql = `project = ${this.projectKey} AND ${jql}`
       }
 
-      const response = await this.client.post('/search', {
-        jql,
-        fields: ['key', 'summary', 'status'],
-        maxResults: 100
+      const data = await this.request('/search', {
+        method: 'POST',
+        body: JSON.stringify({
+          jql,
+          fields: ['key', 'summary', 'status'],
+          maxResults: 100
+        })
       })
 
-      const issues = response.data.issues
+      const issues = data.issues
       console.log(`Found ${issues.length} issues in "${currentStatus}" status`)
 
       for (const issue of issues) {
@@ -108,13 +133,16 @@ class Jira {
         jql = `project = ${this.projectKey} AND ${jql}`
       }
 
-      const response = await this.client.post('/search', {
-        jql,
-        fields: ['key', 'summary', 'status', 'description'],
-        maxResults: 50
+      const data = await this.request('/search', {
+        method: 'POST',
+        body: JSON.stringify({
+          jql,
+          fields: ['key', 'summary', 'status', 'description'],
+          maxResults: 50
+        })
       })
 
-      const issues = response.data.issues
+      const issues = data.issues
       console.log(`Found ${issues.length} issues mentioning PR ${prUrl}`)
 
       for (const issue of issues) {
@@ -124,6 +152,40 @@ class Jira {
       return issues.length
     } catch (error) {
       console.error(`Error updating issues by PR:`, error.message)
+      throw error
+    }
+  }
+
+  /**
+   * Add a comment to a Jira issue
+   * @param {string} issueKey - Jira issue key
+   * @param {string} comment - Comment text
+   */
+  async addComment(issueKey, comment) {
+    try {
+      await this.request(`/issue/${issueKey}/comment`, {
+        method: 'POST',
+        body: JSON.stringify({
+          body: {
+            type: 'doc',
+            version: 1,
+            content: [
+              {
+                type: 'paragraph',
+                content: [
+                  {
+                    type: 'text',
+                    text: comment
+                  }
+                ]
+              }
+            ]
+          }
+        })
+      })
+      console.log(`Added comment to ${issueKey}`)
+    } catch (error) {
+      console.error(`Error adding comment to ${issueKey}:`, error.message)
       throw error
     }
   }
