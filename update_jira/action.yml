@@ -1,0 +1,22 @@
+name: 'Update Jira Task Status'
+description: 'Github Action to Update Jira Task when a PR has been merged to a particular stage'
+inputs:
+  JIRA_BASE_URL:
+    description: 'Jira instance base URL (https://coursedog.atlassian.net)'
+    required: true
+    default: 'https://coursedog.atlassian.net'
+  JIRA_USER_EMAIL:
+    description: 'Email address for Jira authentication'
+    required: true
+    default: ''
+  JIRA_API_TOKEN:
+    description: 'API Token for Jira authentication'
+    required: true
+    default: ''
+  JIRA_PROJECT_KEY:
+    description: 'Jira project key (optional - if not provided, will search all projects)'
+    required: false
+    default: ''
+runs:
+  using: 'node16'
+  main: 'index.js'
