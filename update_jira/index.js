@@ -2,35 +2,33 @@ const core = require('@actions/core')
 const { Octokit } = require('@octokit/rest')
 const Jira = require('./../utils/jira')
 
+run()
+
 async function run() {
   try {
     const {
       GITHUB_REF,
       GITHUB_EVENT_NAME,
       GITHUB_EVENT_PATH,
+      GITHUB_REPOSITORY,
+      GITHUB_TOKEN,
     } = process.env
+
+    const JIRA_BASE_URL = core.getInput('JIRA_BASE_URL')
+    const JIRA_USER_EMAIL = core.getInput('JIRA_USER_EMAIL')
+    const JIRA_API_TOKEN = core.getInput('JIRA_API_TOKEN')
+    const JIRA_PROJECT_KEY = core.getInput('JIRA_PROJECT_KEY')
+
+    const jiraUtil = new Jira({
+      baseUrl: JIRA_BASE_URL,
+      email: JIRA_USER_EMAIL,
+      apiToken: JIRA_API_TOKEN,
+      projectKey: JIRA_PROJECT_KEY,
+    })
 
     if (GITHUB_EVENT_NAME === 'pull_request' || GITHUB_EVENT_NAME === 'pull_request_target') {
       const eventData = require(GITHUB_EVENT_PATH)
-
-      if (eventData.pull_request && eventData.pull_request.draft) {
-        console.log('PR is a draft, skipping Jira update')
-        return
-      }
-
-      const JIRA_BASE_URL = core.getInput('JIRA_BASE_URL')
-      const JIRA_USER_EMAIL = core.getInput('JIRA_USER_EMAIL')
-      const JIRA_API_TOKEN = core.getInput('JIRA_API_TOKEN')
-      const JIRA_PROJECT_KEY = core.getInput('JIRA_PROJECT_KEY')
-
-      const jiraUtil = new Jira({
-        baseUrl: JIRA_BASE_URL,
-        email: JIRA_USER_EMAIL,
-        apiToken: JIRA_API_TOKEN,
-        projectKey: JIRA_PROJECT_KEY,
-      })
-
-      await handlePullRequestEvent(eventData, jiraUtil)
+      await handlePullRequestEvent(eventData, jiraUtil, GITHUB_REPOSITORY)
       return
     }
 
@@ -43,57 +41,50 @@ async function run() {
 
     if (allowedBranches.indexOf(GITHUB_REF) !== -1) {
       const branchName = GITHUB_REF.split('/').pop()
-      await _updateJiraStatuses(branchName)
+      await handlePushEvent(branchName, jiraUtil, GITHUB_REPOSITORY, GITHUB_TOKEN)
     }
   } catch (error) {
     core.setFailed(error.message)
   }
 }
 
-run()
+/**
+ * Handle PR events - draft changes, ready for review, etc.
+ */
+async function handlePullRequestEvent(eventData, jiraUtil, githubRepository) {
+  const { action, pull_request } = eventData
+  const [_, repositoryName] = githubRepository.split('/')
 
-function extractPrNumber(commitMessage) {
-  const match = commitMessage
-    .match(/#[0-9]{1,5}/)
+  const prUrl = `${repositoryName}/pull/${pull_request.number}`
+  let targetStatus = null
 
-  if (match && match.length) {
-    return match[0].substring(1)
+  switch (action) {
+    case 'converted_to_draft':
+      targetStatus = 'In Progress'
+      break
+    case 'ready_for_review':
+      targetStatus = 'Code Review'
+      break
+    default:
+      console.log(`No status update needed for PR action: ${action}`)
+      return
   }
-  return undefined
+
+  if (targetStatus) {
+    console.log(`Updating issues mentioning PR ${prUrl} to status: ${targetStatus}`)
+    await jiraUtil.updateByPR(prUrl, targetStatus)
+  }
 }
 
 /**
- * Function to update the status of the tasks based on
- * the recent commit is getting merged to which branch
- *
- * @param {'main' | 'dev' | 'staging' | 'master' } branch Name of the branch to which the commit is getting merged to
+ * Handle push events to branches
  */
-async function _updateJiraStatuses(branch) {
-
-  const {
-    GITHUB_REPOSITORY,
-    GITHUB_TOKEN,
-  } = process.env
-
+async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) {
   const octokit = new Octokit({
-    auth: GITHUB_TOKEN,
+    auth: githubToken,
   })
 
-  const JIRA_BASE_URL = core.getInput('JIRA_BASE_URL')
-  const JIRA_USER_EMAIL = core.getInput('JIRA_USER_EMAIL')
-  const JIRA_API_TOKEN = core.getInput('JIRA_API_TOKEN')
-  const JIRA_PROJECT_KEY = core.getInput('JIRA_PROJECT_KEY')
-
-  const jiraUtil = new Jira({
-    baseUrl: JIRA_BASE_URL,
-    email: JIRA_USER_EMAIL,
-    apiToken: JIRA_API_TOKEN,
-    projectKey: JIRA_PROJECT_KEY,
-  })
-
-  const [githubOwner, repositoryName] = GITHUB_REPOSITORY.split('/')
-
-  // Get most recent commit to branch
+  const [ githubOwner, repositoryName ] = githubRepository.split('/')
   const { data } = await octokit.rest.repos.getCommit({
     owner: githubOwner,
     repo: repositoryName,
@@ -102,14 +93,7 @@ async function _updateJiraStatuses(branch) {
     page: 1,
   })
 
-  const {
-    commit: {
-      message: commitMessage,
-    },
-  } = data
-
-  // Map branch names to Jira status names
-  // You may need to adjust these based on your Jira workflow
+  const { commit: { message: commitMessage } } = data
   const statusMap = {
     'master': 'Done',
     'main': 'Done',
@@ -117,37 +101,26 @@ async function _updateJiraStatuses(branch) {
     'dev': 'Dev'
   }
 
-  switch (branch) {
-    case 'master':
-    case 'main':
-      if (commitMessage.includes('from coursedog/staging')) {
-        // Update all tasks that are in Staging to Done
-        await jiraUtil.updateByStatus('Staging', statusMap[branch])
-      } else if (commitMessage.match(/#+[0-9]/)) {
-        // direct from open PR to production
-        const prNumber = extractPrNumber(commitMessage)
-        if (!prNumber) return
-        await jiraUtil.updateByPR(`${repositoryName}/pull/${prNumber}`, statusMap[branch])
-      }
-      break
-    case 'staging':
-      if (commitMessage.match(/#+[0-9]/)) {
-        const prNumber = extractPrNumber(commitMessage)
-        if (!prNumber) return
-        await jiraUtil.updateByPR(`${repositoryName}/pull/${prNumber}`, statusMap[branch])
-      }
-      break
-    case 'dev':
-      if (commitMessage.match(/#+[0-9]/)) {
-        // direct from open PR to dev
-        const prNumber = extractPrNumber(commitMessage)
-        if (!prNumber) return
-        await jiraUtil.updateByPR(`${repositoryName}/pull/${prNumber}`, statusMap[branch])
-      }
-      break
+  const newStatus = statusMap[branch]
+  if (!newStatus) {
+    console.log(`No status mapping for branch: ${branch}`)
+    return
+  }
 
-    default:
-      break
+  // Handle special case: staging -> production bulk update
+  if ((branch === 'master' || branch === 'main') && commitMessage.includes('from coursedog/staging')) {
+    console.log('Bulk updating all Staging issues to Done')
+    await jiraUtil.updateByStatus('Staging', newStatus)
+    return
+  }
+
+  // Handle PR merges (look for PR number in commit message)
+  const prMatch = commitMessage.match(/#([0-9]+)/)
+  if (prMatch) {
+    const prNumber = prMatch[1]
+    const prUrl = `${repositoryName}/pull/${prNumber}`
+    console.log(`Updating issues mentioning PR ${prUrl} to status: ${newStatus}`)
+    await jiraUtil.updateByPR(prUrl, newStatus)
   }
 }
 
