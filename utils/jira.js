@@ -154,5 +154,6 @@ class Jira {
       throw error
     }
   }
+}
 
 module.exports = Jira
