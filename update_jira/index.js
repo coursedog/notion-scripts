@@ -174,6 +174,7 @@ async function handlePullRequestEvent(eventData, jiraUtil) {
   switch (action) {
     case 'opened':
     case 'reopened':
+    case 'converted_to_draft':
       targetStatus = 'In Development'
       break
     case 'ready_for_review':
