@@ -62,7 +62,6 @@ class Jira {
       const transition = transitions.find((t) =>
         t.to.name.toLowerCase() === targetStatus.toLowerCase()
       )
-
       if (!transition) {
         console.warn(`No transition found to status "${targetStatus}" for issue ${issueKey}`)
         return false
