@@ -15,13 +15,13 @@ async function run() {
     } = process.env
 
     const JIRA_BASE_URL = core.getInput('JIRA_BASE_URL')
-    const JIRA_USER_EMAIL = core.getInput('JIRA_USER_EMAIL')
+    const JIRA_EMAIL = core.getInput('JIRA_EMAIL')
     const JIRA_API_TOKEN = core.getInput('JIRA_API_TOKEN')
     const JIRA_PROJECT_KEY = core.getInput('JIRA_PROJECT_KEY')
 
     const jiraUtil = new Jira({
       baseUrl: JIRA_BASE_URL,
-      email: JIRA_USER_EMAIL,
+      email: JIRA_EMAIL,
       apiToken: JIRA_API_TOKEN,
       projectKey: JIRA_PROJECT_KEY,
     })

@@ -5,7 +5,7 @@ inputs:
     description: 'Jira instance base URL (https://coursedog.atlassian.net)'
     required: true
     default: 'https://coursedog.atlassian.net'
-  JIRA_USER_EMAIL:
+  JIRA_EMAIL:
     description: 'Email address for Jira authentication'
     required: true
     default: ''
