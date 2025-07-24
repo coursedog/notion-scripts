@@ -59,7 +59,7 @@ class Jira {
   async transitionIssue(issueKey, targetStatus) {
     try {
       const transitions = await this.getTransitions(issueKey)
-      const transition = transitions.find(t =>
+      const transition = transitions.find((t) =>
         t.to.name.toLowerCase() === targetStatus.toLowerCase()
       )
 
