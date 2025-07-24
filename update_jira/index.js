@@ -26,7 +26,7 @@ async function run() {
       projectKey: JIRA_PROJECT_KEY,
     })
 
-    const response = await jiraUtil.getWorkflowSchema()
+    const response = await jiraUtil.getWorkflowSchema('ALL')
     const schema = await response.json()
     console.log('got schema!', schema)
 
