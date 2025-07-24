@@ -155,39 +155,4 @@ class Jira {
     }
   }
 
-  /**
-   * Add a comment to a Jira issue
-   * @param {string} issueKey - Jira issue key
-   * @param {string} comment - Comment text
-   */
-  async addComment(issueKey, comment) {
-    try {
-      await this.request(`/issue/${issueKey}/comment`, {
-        method: 'POST',
-        body: JSON.stringify({
-          body: {
-            type: 'doc',
-            version: 1,
-            content: [
-              {
-                type: 'paragraph',
-                content: [
-                  {
-                    type: 'text',
-                    text: comment
-                  }
-                ]
-              }
-            ]
-          }
-        })
-      })
-      console.log(`Added comment to ${issueKey}`)
-    } catch (error) {
-      console.error(`Error adding comment to ${issueKey}:`, error.message)
-      throw error
-    }
-  }
-}
-
 module.exports = Jira

@@ -193,9 +193,6 @@ async function handlePullRequestEvent(eventData, jiraUtil) {
     for (const issueKey of issueKeys) {
       try {
         await jiraUtil.transitionIssue(issueKey, targetStatus)
-
-        const prComment = `Pull Request ${action}: [PR #${pull_request.number}|${pull_request.html_url}]`
-        await jiraUtil.addComment(issueKey, prComment)
       } catch (error) {
         console.error(`Failed to update ${issueKey}:`, error.message)
       }
