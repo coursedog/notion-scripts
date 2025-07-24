@@ -33,7 +33,7 @@ class Jira {
       throw new Error(`Jira API error: ${response.status} ${response.statusText} - ${errorText}`)
     }
 
-    return response.json()
+    return response
   }
 
   /**
@@ -43,7 +43,8 @@ class Jira {
    */
   async getTransitions(issueKey) {
     try {
-      const data = await this.request(`/issue/${issueKey}/transitions`)
+      const response = await this.request(`/issue/${issueKey}/transitions`)
+      const data = await response.json()
       return data.transitions
     } catch (error) {
       console.error(`Error getting transitions for ${issueKey}:`, error.message)
@@ -96,7 +97,7 @@ class Jira {
         jql = `project = ${this.projectKey} AND ${jql}`
       }
 
-      const data = await this.request('/search', {
+      const response = await this.request('/search', {
         method: 'POST',
         body: JSON.stringify({
           jql,
@@ -105,6 +106,7 @@ class Jira {
         })
       })
 
+      const data = await response.json()
       const issues = data.issues
       console.log(`Found ${issues.length} issues in "${currentStatus}" status`)
 
@@ -132,7 +134,7 @@ class Jira {
         jql = `project = ${this.projectKey} AND ${jql}`
       }
 
-      const data = await this.request('/search', {
+      const response = await this.request('/search', {
         method: 'POST',
         body: JSON.stringify({
           jql,
@@ -141,6 +143,7 @@ class Jira {
         })
       })
 
+      const data = await response.json()
       const issues = data.issues
       console.log(`Found ${issues.length} issues mentioning PR ${prUrl}`)
 
