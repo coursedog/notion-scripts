@@ -169,6 +169,8 @@ async function handlePullRequestEvent(eventData, jiraUtil) {
   let targetStatus = null
   const targetBranch = pull_request.base.ref
 
+  console.log(action)
+
   switch (action) {
     case 'opened':
     case 'reopened':
