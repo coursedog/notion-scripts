@@ -60,7 +60,7 @@ async function handlePullRequestEvent(eventData, jiraUtil, githubRepository) {
 
   switch (action) {
     case 'converted_to_draft':
-      targetStatus = 'In Progress'
+      targetStatus = 'In Development'
       break
     case 'ready_for_review':
       targetStatus = 'Code Review'
@@ -174,7 +174,7 @@ async function handlePullRequestEvent(eventData, jiraUtil) {
   switch (action) {
     case 'opened':
     case 'reopened':
-      targetStatus = 'In Progress'
+      targetStatus = 'In Development'
       break
     case 'ready_for_review':
       targetStatus = 'Code Review'
