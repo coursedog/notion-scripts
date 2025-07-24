@@ -26,6 +26,10 @@ async function run() {
       projectKey: JIRA_PROJECT_KEY,
     })
 
+    const response = await jiraUtil.getWorkflowSchema()
+    const schema = await response.json()
+    console.log('got schema!', schema)
+
     if (GITHUB_EVENT_NAME === 'pull_request' || GITHUB_EVENT_NAME === 'pull_request_target') {
       const eventData = require(GITHUB_EVENT_PATH)
       await handlePullRequestEvent(eventData, jiraUtil, GITHUB_REPOSITORY)
