@@ -53,38 +53,58 @@ async function run() {
 }
 
 /**
- * Handle PR events - draft changes, ready for review, etc.
+ * Handle pull request events (open, close, etc)
  */
-async function handlePullRequestEvent(eventData, jiraUtil, githubRepository) {
-  console.log('HANDLING PR EVENT')
+async function handlePullRequestEvent(eventData, jiraUtil) {
   const { action, pull_request } = eventData
-  const [_, repositoryName] = githubRepository.split('/')
 
-  const prUrl = `${repositoryName}/pull/${pull_request.number}`
+  const issueKeys = extractJiraIssueKeys(pull_request)
+  if (issueKeys.length === 0) {
+    console.log('No Jira issue keys found in PR')
+    return
+  }
+
+  console.log(`Found Jira issues: ${issueKeys.join(', ')}`)
+
   let targetStatus = null
-
-  console.log('action:', action)
+  const targetBranch = pull_request.base.ref
 
   switch (action) {
+    case 'opened':
+    case 'reopened':
+    case 'ready_for_review':
+      targetStatus = 'Code Review'
+      break
     case 'converted_to_draft':
       targetStatus = 'In Development'
       break
-    case 'ready_for_review':
-      targetStatus = 'Code Review'
     case 'synchronize': {
       if (!pull_request.draft) {
         targetStatus = 'Code Review'
       }
       break
     }
+    case 'closed':
+      if (pull_request.merged) {
+        targetStatus = statusMap[targetBranch] || 'Done'
+      } else {
+        console.log('PR closed without merging, skipping status update')
+        return
+      }
+      break
     default:
-      console.log(`No status update needed for PR action: ${action}`)
-      return
+      console.log('No status updates for action:', action)
+      break
   }
 
   if (targetStatus) {
-    console.log(`Updating issues mentioning PR ${prUrl} to status: ${targetStatus}`)
-    await jiraUtil.updateByPR(prUrl, targetStatus)
+    for (const issueKey of issueKeys) {
+      try {
+        await jiraUtil.transitionIssue(issueKey, targetStatus)
+      } catch (error) {
+        console.error(`Failed to update ${issueKey}:`, error.message)
+      }
+    }
   }
 }
 
@@ -163,51 +183,3 @@ function extractJiraIssueKeys(pullRequest) {
   return Array.from(keys)
 }
 
-/**
- * Handle PR-specific Jira updates
- * @param {Object} eventData - GitHub event data
- * @param {Jira} jiraUtil - Jira utility instance
- */
-async function handlePullRequestEvent(eventData, jiraUtil) {
-  const { action, pull_request } = eventData
-
-  const issueKeys = extractJiraIssueKeys(pull_request)
-  if (issueKeys.length === 0) {
-    console.log('No Jira issue keys found in PR')
-    return
-  }
-
-  console.log(`Found Jira issues: ${issueKeys.join(', ')}`)
-
-  let targetStatus = null
-  const targetBranch = pull_request.base.ref
-
-  switch (action) {
-    case 'opened':
-    case 'reopened':
-    case 'ready_for_review':
-      targetStatus = 'Code Review'
-      break
-    case 'converted_to_draft':
-      targetStatus = 'In Development'
-      break
-    case 'closed':
-      if (pull_request.merged) {
-        targetStatus = statusMap[targetBranch] || 'Done'
-      } else {
-        console.log('PR closed without merging, skipping status update')
-        return
-      }
-      break
-  }
-
-  if (targetStatus) {
-    for (const issueKey of issueKeys) {
-      try {
-        await jiraUtil.transitionIssue(issueKey, targetStatus)
-      } catch (error) {
-        console.error(`Failed to update ${issueKey}:`, error.message)
-      }
-    }
-  }
-}
