@@ -2,14 +2,14 @@ const core = require('@actions/core')
 const { Octokit } = require('@octokit/rest')
 const Jira = require('./../utils/jira')
 
-run()
-
 const statusMap = {
   'master': 'Deployed to Production',
   'main': 'Deployed to Production',
   'staging': 'Deployed to Staging',
   'dev': 'Deployed to Staging'
 }
+
+run()
 
 async function run() {
   try {
@@ -37,8 +37,6 @@ async function run() {
       await handlePullRequestEvent(eventData, jiraUtil, GITHUB_REPOSITORY)
       return
     }
-
-    console.log('GIT REF', GITHUB_REF)
 
     const allowedBranches = [
       'refs/heads/master',
