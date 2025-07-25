@@ -79,7 +79,7 @@ class Jira {
           const transitionInfo = {
             id: transition.id,
             name: transition.name,
-            from: transition.from || [], // Array of source status IDs
+            from: transition.from || [],
             to: transition.to, // Target status ID
             type: transition.type || 'directed',
             hasScreen: transition.hasScreen || false,
@@ -88,9 +88,7 @@ class Jira {
 
           stateMachine.transitions.push(transitionInfo)
 
-          // Build transition map for quick lookup
           const fromStatuses = transitionInfo.from.length > 0 ? transitionInfo.from : Object.keys(stateMachine.states)
-
           fromStatuses.forEach(fromStatus => {
             if (!stateMachine.transitionMap.has(fromStatus)) {
               stateMachine.transitionMap.set(fromStatus, new Map())
@@ -217,6 +215,7 @@ class Jira {
     console.log(`\n=== WORKFLOW: ${stateMachine.name} ===`)
 
     console.log('\n--- STATES ---')
+    console.log(JSON.stringify(stateMachine))
     for (const [id, state] of Object.entries(stateMachine.states)) {
       console.log(`  [${id}] ${state.name} (${state.statusCategory.name})`)
     }
@@ -417,57 +416,6 @@ class Jira {
       return statuses
     } catch (error) {
       console.error(`Error getting statuses:`, error.message)
-      throw error
-    }
-  }
-
-  /**
-   * Build a complete transition graph by analyzing multiple issues
-   * @param {number} sampleSize - Number of issues to analyze
-   * @returns {Promise<Map>} Transition graph
-   */
-  async buildTransitionGraph(sampleSize = 50) {
-    try {
-      // Graph structure: Map<fromStatus, Map<toStatus, transitionId>>
-      const transitionGraph = new Map()
-
-      let jql = `order by created DESC`
-      if (this.projectKey) {
-        jql = `project = ${this.projectKey} AND ${jql}`
-      }
-
-      const response = await this.request('/search', {
-        method: 'POST',
-        body: JSON.stringify({
-          jql,
-          fields: ['key', 'status'],
-          maxResults: sampleSize
-        })
-      })
-
-      const data = await response.json()
-      const issues = data.issues
-
-      // For each issue, get available transitions
-      for (const issue of issues) {
-        const currentStatus = issue.fields.status.name
-        const transitions = await this.getTransitions(issue.key)
-
-        if (!transitionGraph.has(currentStatus)) {
-          transitionGraph.set(currentStatus, new Map())
-        }
-
-        const statusTransitions = transitionGraph.get(currentStatus)
-
-        for (const transition of transitions) {
-          const toStatus = transition.to.name
-          statusTransitions.set(toStatus, transition.id)
-        }
-      }
-
-      return transitionGraph
-    } catch (error) {
-      console.error(`Error building transition graph:`, error.message)
       throw error
     }
   }
