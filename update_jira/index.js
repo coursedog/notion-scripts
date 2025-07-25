@@ -117,7 +117,7 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
     auth: githubToken,
   })
 
-  const [ githubOwner, repositoryName ] = githubRepository.split('/')
+  const [githubOwner, repositoryName] = githubRepository.split('/')
   const { data } = await octokit.rest.repos.getCommit({
     owner: githubOwner,
     repo: repositoryName,
