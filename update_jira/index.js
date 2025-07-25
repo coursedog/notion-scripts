@@ -42,10 +42,12 @@ async function run() {
     ]
 
     if (allowedBranches.indexOf(GITHUB_REF) !== -1) {
+      console.log('will handle push event!')
       const branchName = GITHUB_REF.split('/').pop()
       await handlePushEvent(branchName, jiraUtil, GITHUB_REPOSITORY, GITHUB_TOKEN)
     }
   } catch (error) {
+    console.log('Failed to update task statuses:', error)
     core.setFailed(error.message)
   }
 }
