@@ -215,7 +215,7 @@ class Jira {
     console.log(`\n=== WORKFLOW: ${stateMachine.name} ===`)
 
     console.log('\n--- STATES ---')
-    console.log(JSON.stringify(stateMachine), '\n\n\n')
+    console.log(JSON.stringify(stateMachine), '\n\n\n', 'AAAAAAAAAAAAAAAAA')
     for (const [id, state] of Object.entries(stateMachine.states)) {
       console.log(`  [${id}] ${state.name} (${state.statusCategory.name})`)
     }
