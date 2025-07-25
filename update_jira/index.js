@@ -26,9 +26,8 @@ async function run() {
       projectKey: JIRA_PROJECT_KEY,
     })
 
-    const workflowResponse = await jiraUtil.getProjectWorkflowName('ALL')
-    const workflowName = await workflowResponse.json()
-    console.log('got workflow!', workflow)
+    const workflowName = await jiraUtil.getProjectWorkflowName('ALL')
+    console.log('got workflow!', workflowName)
 
     const smResponse = await jiraUtil.getWorkflowStateMachine(workflowName)
     const sm = await smResponse.json()
