@@ -328,20 +328,25 @@ class Jira {
   }
 
   /**
-  * Find the shortest path between two statuses using BFS
-  * @param {Object} stateMachine - The workflow state machine
-  * @param {string} fromStatusName - Starting status name
-  * @param {string} toStatusName - Target status name
-  * @returns {Array} Shortest path of transitions
-  */
-  findShortestTransitionPath(stateMachine, fromStatusName, toStatusName) {
+   * Find the shortest path between two statuses using BFS, excluding paths through certain states
+   * @param {Object} stateMachine - The workflow state machine
+   * @param {string} fromStatusName - Starting status name
+   * @param {string} toStatusName - Target status name
+   * @param {Array<string>} excludeStates - Array of state names to exclude from paths (optional)
+   * @returns {Array} Shortest path of transitions
+   */
+  findShortestTransitionPath(stateMachine, fromStatusName, toStatusName, excludeStates = []) {
     // Convert names to IDs
     let fromStatusId = null
     let toStatusId = null
+    const excludeStatusIds = new Set()
 
     for (const [statusId, status] of Object.entries(stateMachine.states)) {
       if (status.name === fromStatusName) fromStatusId = statusId
       if (status.name === toStatusName) toStatusId = statusId
+      if (excludeStates.includes(status.name)) {
+        excludeStatusIds.add(statusId)
+      }
     }
 
     if (!fromStatusId || !toStatusId) {
@@ -350,6 +355,12 @@ class Jira {
 
     if (fromStatusId === toStatusId) {
       return [] // Already at destination
+    }
+
+    // Check if target status is in excluded states
+    if (excludeStatusIds.has(toStatusId)) {
+      console.warn(`Target status "${toStatusName}" is in the excluded states list`)
+      return null
     }
 
     // BFS to find shortest path
@@ -362,6 +373,11 @@ class Jira {
       const transitions = stateMachine.transitionMap.get(currentId)
       if (transitions) {
         for (const [nextStatusId, transition] of transitions) {
+          // Skip if the next status is in the excluded list (unless it's the target)
+          if (excludeStatusIds.has(nextStatusId) && nextStatusId !== toStatusId) {
+            continue
+          }
+
           if (nextStatusId === toStatusId) {
             // Found the target
             return [...path, {
@@ -392,16 +408,16 @@ class Jira {
       }
     }
 
-    return null // No path found
+    return null
   }
 
   /**
    * Transition an issue through multiple states to reach target
    * @param {string} issueKey - Jira issue key
-   * @param {string} targetStatus - Target status
-   * @param {Map} transitionGraph - Pre-built transition graph (optional)
+   * @param {string} targetStatus - Target status name
+   * @param {Array<string>} excludeStates - Array of state names to exclude from paths (optional)
    */
-  async transitionIssue(issueKey, targetStatusName) {
+  async transitionIssue(issueKey, targetStatusName, excludeStates = ['Blocked', 'Rejected']) {
     try {
       // Get current issue status
       const issueResponse = await this.request(`/issue/${issueKey}?fields=status`)
@@ -413,15 +429,20 @@ class Jira {
         return true
       }
 
-      const [ projectKey ] = issueKey.split('-')
+      const [projectKey] = issueKey.split('-')
       const workflowName = await this.getProjectWorkflowName(projectKey)
       const stateMachine = await this.getWorkflowStateMachine(workflowName)
 
-      // Find shortest path using BFS
-      const shortestPath = this.findShortestTransitionPath(stateMachine, currentStatusName, targetStatusName)
+      // Find shortest path using BFS, excluding specified states
+      const shortestPath = this.findShortestTransitionPath(
+        stateMachine,
+        currentStatusName,
+        targetStatusName,
+        excludeStates
+      )
 
       if (!shortestPath) {
-        console.error(`No transition path found from ${currentStatusName} to ${targetStatusName}`)
+        console.error(`No transition path found from ${currentStatusName} to ${targetStatusName} that avoids ${excludeStates.join(', ')}`)
         return false
       }
 
