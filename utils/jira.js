@@ -46,6 +46,8 @@ class Jira {
       const response = await this.request(`/workflow/search?workflowName=${encodeURIComponent(workflowName)}&expand=statuses,transitions`)
       const data = await response.json()
 
+      console.log('GOT DATA', data)
+
       if (!data.values || data.values.length === 0) {
         throw new Error(`Workflow "${workflowName}" not found`)
       }
