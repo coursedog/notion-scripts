@@ -226,8 +226,9 @@ class Jira {
    * Search for issues with a specific status and update them
    * @param {string} currentStatus - Current status to search for
    * @param {string} newStatus - New status to transition to
+   * @param {Object} fields - Additional fields to set during transition
    */
-  async updateByStatus(currentStatus, newStatus) {
+  async updateByStatus(currentStatus, newStatus, fields = {}) {
     try {
       let jql = `status = "${currentStatus}"`
       const response = await this.request('/search', {
@@ -244,7 +245,7 @@ class Jira {
       console.log(`Found ${issues.length} issues in "${currentStatus}" status`)
 
       for (const issue of issues) {
-        await this.transitionIssue(issue.key, newStatus)
+        await this.transitionIssue(issue.key, newStatus, ['Blocked', 'Rejected'], fields)
       }
 
       return issues.length
@@ -258,8 +259,9 @@ class Jira {
    * Find issues that mention a PR URL and update their status
    * @param {string} prUrl - PR URL to search for (e.g., "myrepo/pull/123")
    * @param {string} newStatus - New status to transition to
+   * @param {Object} fields - Additional fields to set during transition
    */
-  async updateByPR(prUrl, newStatus) {
+  async updateByPR(prUrl, newStatus, fields = {}) {
     try {
       let jql = `text ~ "${prUrl}"`
       const response = await this.request('/search', {
@@ -276,7 +278,7 @@ class Jira {
       console.log(`Found ${issues.length} issues mentioning PR ${prUrl}`)
 
       for (const issue of issues) {
-        await this.transitionIssue(issue.key, newStatus)
+        await this.transitionIssue(issue.key, newStatus, ['Blocked', 'Rejected'], fields)
       }
 
       return issues.length
@@ -317,6 +319,54 @@ class Jira {
       return statuses
     } catch (error) {
       console.error(`Error getting statuses:`, error.message)
+      throw error
+    }
+  }
+
+  /**
+   * Generic method to get field values by type
+   * @param {string} fieldName - Field name (resolution, priority, etc)
+   * @returns {Promise<Array>} Available options for the field
+   */
+  async getFieldOptions(fieldName) {
+    try {
+      const fieldMappings = {
+        'resolution': '/resolution',
+        'priority': '/priority',
+        'issuetype': '/issuetype',
+        'component': '/component',
+        'version': '/version'
+      }
+
+      const endpoint = fieldMappings[fieldName]
+      if (!endpoint) {
+        console.log(`No endpoint mapping for field: ${fieldName}`)
+        return []
+      }
+
+      const response = await this.request(endpoint)
+      const options = await response.json()
+      return options
+    } catch (error) {
+      console.error(`Error getting ${fieldName} options:`, error.message)
+      return []
+    }
+  }
+
+  /**
+   * Get transition details including required fields
+   * @param {string} issueKey - Jira issue key
+   * @param {string} transitionId - Transition ID
+   * @returns {Promise<Object>} Transition details
+   */
+  async getTransitionDetails(issueKey, transitionId) {
+    try {
+      const response = await this.request(`/issue/${issueKey}/transitions?transitionId=${transitionId}&expand=transitions.fields`)
+      const data = await response.json()
+      const transition = data.transitions.find(t => t.id === transitionId)
+      return transition || {}
+    } catch (error) {
+      console.error(`Error getting transition details:`, error.message)
       throw error
     }
   }
@@ -407,8 +457,9 @@ class Jira {
    * @param {string} issueKey - Jira issue key
    * @param {string} targetStatus - Target status name
    * @param {Array<string>} excludeStates - Array of state names to exclude from paths (optional)
+   * @param {Object} fields - Additional fields to set during the final transition
    */
-  async transitionIssue(issueKey, targetStatusName, excludeStates = ['Blocked', 'Rejected']) {
+  async transitionIssue(issueKey, targetStatusName, excludeStates = ['Blocked', 'Rejected'], fields = {}) {
     try {
       const issueResponse = await this.request(`/issue/${issueKey}?fields=status`)
       const issueData = await issueResponse.json()
@@ -439,7 +490,9 @@ class Jira {
       console.log(`Found shortest transition path with ${shortestPath.length} steps:`)
       shortestPath.forEach(t => console.log(`  ${t.fromName} → ${t.toName} (${t.name})`))
 
-      for (const transition of shortestPath) {
+      for (let i = 0; i < shortestPath.length; i++) {
+        const transition = shortestPath[i]
+        const isLastTransition = i === shortestPath.length - 1
         const availableTransitions = await this.getTransitions(issueKey)
 
         const actualTransition = availableTransitions.find(t =>
@@ -453,13 +506,28 @@ class Jira {
           return false
         }
 
+        const transitionPayload = {
+          transition: {
+            id: actualTransition.id
+          }
+        }
+
+        if (isLastTransition && Object.keys(fields).length > 0) {
+          transitionPayload.fields = fields
+        }
+
+        const transitionDetails = await this.getTransitionDetails(issueKey, actualTransition.id)
+        if (transitionDetails.fields) {
+          for (const [fieldId, fieldInfo] of Object.entries(transitionDetails.fields)) {
+            if (fieldInfo.required && !transitionPayload.fields?.[fieldId]) {
+              console.warn(`Required field ${fieldId} (${fieldInfo.name}) not provided for transition to ${transition.toName}`)
+            }
+          }
+        }
+
         await this.request(`/issue/${issueKey}/transitions`, {
           method: 'POST',
-          body: JSON.stringify({
-            transition: {
-              id: actualTransition.id
-            }
-          })
+          body: JSON.stringify(transitionPayload)
         })
 
         console.log(`✓ Transitioned ${issueKey}: ${transition.fromName} → ${transition.toName}`)

@@ -3,10 +3,26 @@ const { Octokit } = require('@octokit/rest')
 const Jira = require('./../utils/jira')
 
 const statusMap = {
-  'master': 'Deployed to Production',
-  'main': 'Deployed to Production',
-  'staging': 'Deployed to Staging',
-  'dev': 'Deployed to Staging'
+  'master': {
+    status: 'Deployed to Production',
+    fields: {}
+  },
+  'main': {
+    status: 'Deployed to Production',
+    fields: {}
+  },
+  'staging': {
+    status: 'Deployed to Staging',
+    fields: {
+      resolution: 'Done',
+    }
+  },
+  'dev': {
+    status: 'Deployed to Staging',
+    fields: {
+      resolution: 'Done'
+    }
+  }
 }
 
 run()
@@ -33,7 +49,6 @@ async function run() {
 
     if (GITHUB_EVENT_NAME === 'pull_request' || GITHUB_EVENT_NAME === 'pull_request_target') {
       const eventData = require(GITHUB_EVENT_PATH)
-
       await handlePullRequestEvent(eventData, jiraUtil, GITHUB_REPOSITORY)
       return
     }
@@ -55,6 +70,42 @@ async function run() {
 }
 
 /**
+ * Prepare fields for Jira transition, converting names to IDs where needed
+ */
+async function prepareFields(fields, jiraUtil) {
+  const preparedFields = {}
+
+  for (const [fieldName, fieldValue] of Object.entries(fields)) {
+    if (fieldName === 'resolution' && typeof fieldValue === 'string') {
+      // Look up resolution ID by name
+      const resolutions = await jiraUtil.getFieldOptions('resolution')
+      const resolution = resolutions.find(r => r.name === fieldValue)
+      if (resolution) {
+        preparedFields.resolution = { id: resolution.id }
+      } else {
+        console.warn(`Resolution "${fieldValue}" not found`)
+      }
+    } else if (fieldName === 'priority' && typeof fieldValue === 'string') {
+      // Look up priority ID by name
+      const priorities = await jiraUtil.getFieldOptions('priority')
+      const priority = priorities.find(p => p.name === fieldValue)
+      if (priority) {
+        preparedFields.priority = { id: priority.id }
+      }
+    } else if (fieldName === 'assignee' && typeof fieldValue === 'string') {
+      // For assignee, you might need to look up the user
+      // This depends on your Jira configuration
+      preparedFields.assignee = { name: fieldValue }
+    } else {
+      // Pass through other fields as-is
+      preparedFields[fieldName] = fieldValue
+    }
+  }
+
+  return preparedFields
+}
+
+/**
  * Handle pull request events (open, close, etc)
  */
 async function handlePullRequestEvent(eventData, jiraUtil) {
@@ -69,6 +120,7 @@ async function handlePullRequestEvent(eventData, jiraUtil) {
   console.log(`Found Jira issues: ${issueKeys.join(', ')}`)
 
   let targetStatus = null
+  let customFields = {}
   const targetBranch = pull_request.base.ref
 
   switch (action) {
@@ -80,15 +132,21 @@ async function handlePullRequestEvent(eventData, jiraUtil) {
     case 'converted_to_draft':
       targetStatus = 'In Development'
       break
-    case 'synchronize': {
+    case 'synchronize':
       if (!pull_request.draft) {
         targetStatus = 'Code Review'
       }
       break
-    }
     case 'closed':
       if (pull_request.merged) {
-        targetStatus = statusMap[targetBranch] || 'Done'
+        const branchConfig = statusMap[targetBranch]
+        if (branchConfig) {
+          targetStatus = branchConfig.status
+          customFields = branchConfig.fields || {}
+        } else {
+          targetStatus = 'Done'
+          customFields = { resolution: 'Done' }
+        }
       } else {
         console.log('PR closed without merging, skipping status update')
         return
@@ -100,9 +158,11 @@ async function handlePullRequestEvent(eventData, jiraUtil) {
   }
 
   if (targetStatus) {
+    const preparedFields = await prepareFields(customFields, jiraUtil)
+
     for (const issueKey of issueKeys) {
       try {
-        await jiraUtil.transitionIssue(issueKey, targetStatus)
+        await jiraUtil.transitionIssue(issueKey, targetStatus, ['Blocked', 'Rejected'], preparedFields)
       } catch (error) {
         console.error(`Failed to update ${issueKey}:`, error.message)
       }
@@ -128,16 +188,21 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
   })
 
   const { commit: { message: commitMessage } } = data
-  const newStatus = statusMap[branch]
-  if (!newStatus) {
+  const branchConfig = statusMap[branch]
+  if (!branchConfig) {
     console.log(`No status mapping for branch: ${branch}`)
     return
   }
 
+  const newStatus = branchConfig.status
+  const customFields = branchConfig.fields || {}
+
+  const preparedFields = await prepareFields(customFields, jiraUtil)
+
   // Handle special case: staging -> production bulk update
   if ((branch === 'master' || branch === 'main') && commitMessage.includes('from coursedog/staging')) {
     console.log('Bulk updating all Staging issues to Done')
-    await jiraUtil.updateByStatus('Deployed to Staging', newStatus)
+    await jiraUtil.updateByStatus('Deployed to Staging', newStatus, preparedFields)
     return
   }
 
@@ -147,7 +212,7 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
     const prNumber = prMatch[1]
     const prUrl = `${repositoryName}/pull/${prNumber}`
     console.log(`Updating issues mentioning PR ${prUrl} to status: ${newStatus}`)
-    await jiraUtil.updateByPR(prUrl, newStatus)
+    await jiraUtil.updateByPR(prUrl, newStatus, preparedFields)
   }
 }
 
@@ -176,4 +241,3 @@ function extractJiraIssueKeys(pullRequest) {
 
   return Array.from(keys)
 }
-
