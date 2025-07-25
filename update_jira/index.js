@@ -69,7 +69,12 @@ async function handlePullRequestEvent(eventData, jiraUtil, githubRepository) {
       break
     case 'ready_for_review':
       targetStatus = 'Code Review'
+    case 'synchronize': {
+      if (!pull_request.draft) {
+        targetStatus = 'Code Review'
+      }
       break
+    }
     default:
       console.log(`No status update needed for PR action: ${action}`)
       return
