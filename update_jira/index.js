@@ -52,6 +52,7 @@ async function run() {
  * Handle PR events - draft changes, ready for review, etc.
  */
 async function handlePullRequestEvent(eventData, jiraUtil, githubRepository) {
+  console.log('HANDLING PR EVENT')
   const { action, pull_request } = eventData
   const [_, repositoryName] = githubRepository.split('/')
 
@@ -82,6 +83,7 @@ async function handlePullRequestEvent(eventData, jiraUtil, githubRepository) {
  * Handle push events to branches
  */
 async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) {
+  console.log('HANDLING PUSH EVENT')
   const octokit = new Octokit({
     auth: githubToken,
   })
