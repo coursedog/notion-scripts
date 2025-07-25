@@ -24,6 +24,8 @@ async function run() {
       apiToken: JIRA_API_TOKEN,
     })
 
+    console.log(GITHUB_EVENT_NAME)
+
     if (GITHUB_EVENT_NAME === 'pull_request' || GITHUB_EVENT_NAME === 'pull_request_target') {
       const eventData = require(GITHUB_EVENT_PATH)
       await handlePullRequestEvent(eventData, jiraUtil, GITHUB_REPOSITORY)
