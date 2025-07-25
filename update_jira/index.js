@@ -38,6 +38,8 @@ async function run() {
       return
     }
 
+    console.log('GIT REF', GITHUB_REF)
+
     const allowedBranches = [
       'refs/heads/master',
       'refs/heads/main',
