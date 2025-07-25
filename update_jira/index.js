@@ -4,6 +4,13 @@ const Jira = require('./../utils/jira')
 
 run()
 
+const statusMap = {
+  'master': 'Deployed to Production',
+  'main': 'Deployed to Production',
+  'staging': 'Deployed to Staging',
+  'dev': 'Deployed to Staging'
+}
+
 async function run() {
   try {
     const {
@@ -121,13 +128,6 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
   })
 
   const { commit: { message: commitMessage } } = data
-  const statusMap = {
-    'master': 'Deployed to Production',
-    'main': 'Deployed to Production',
-    'staging': 'Deployed to Staging',
-    'dev': 'Deployed to Staging'
-  }
-
   const newStatus = statusMap[branch]
   if (!newStatus) {
     console.log(`No status mapping for branch: ${branch}`)
