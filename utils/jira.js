@@ -56,7 +56,6 @@ class Jira {
 
       const workflow = data.values[0]
 
-      // Build state machine structure
       const stateMachine = {
         name: workflow.id.name,
         states: {},
@@ -64,7 +63,6 @@ class Jira {
         transitionMap: new Map() // For quick lookup: Map<fromStatusId, Map<toStatusId, transition>>
       }
 
-      // Process states
       if (workflow.statuses) {
         workflow.statuses.forEach(status => {
           stateMachine.states[status.id] = {
@@ -75,7 +73,6 @@ class Jira {
         })
       }
 
-      // Process transitions
       if (workflow.transitions) {
         workflow.transitions.forEach(transition => {
           const transitionInfo = {
@@ -157,7 +154,6 @@ class Jira {
    * @returns {Array} All possible paths
    */
   findAllTransitionPaths(stateMachine, fromStatusName, toStatusName) {
-    // Convert names to IDs
     let fromStatusId = null
     let toStatusId = null
 
@@ -297,11 +293,9 @@ class Jira {
    */
   async getWorkflowSchema(projectKey) {
     try {
-      // Get project details to find issue types
       const project = await this.request(`/project/${projectKey}`)
       const projectData = await project.json()
 
-      // Get workflow schemes
       const workflowResponse = await this.request(`/workflowscheme/project?projectId=${projectData.id}`)
       const workflowData = await workflowResponse.json()
 
@@ -336,7 +330,6 @@ class Jira {
    * @returns {Array} Shortest path of transitions
    */
   findShortestTransitionPath(stateMachine, fromStatusName, toStatusName, excludeStates = []) {
-    // Convert names to IDs
     let fromStatusId = null
     let toStatusId = null
     const excludeStatusIds = new Set()
@@ -357,7 +350,6 @@ class Jira {
       return [] // Already at destination
     }
 
-    // Check if target status is in excluded states
     if (excludeStatusIds.has(toStatusId)) {
       console.warn(`Target status "${toStatusName}" is in the excluded states list`)
       return null
@@ -379,7 +371,6 @@ class Jira {
           }
 
           if (nextStatusId === toStatusId) {
-            // Found the target
             return [...path, {
               id: transition.id,
               name: transition.name,
@@ -419,7 +410,6 @@ class Jira {
    */
   async transitionIssue(issueKey, targetStatusName, excludeStates = ['Blocked', 'Rejected']) {
     try {
-      // Get current issue status
       const issueResponse = await this.request(`/issue/${issueKey}?fields=status`)
       const issueData = await issueResponse.json()
       const currentStatusName = issueData.fields.status.name
@@ -449,12 +439,9 @@ class Jira {
       console.log(`Found shortest transition path with ${shortestPath.length} steps:`)
       shortestPath.forEach(t => console.log(`  ${t.fromName} → ${t.toName} (${t.name})`))
 
-      // Execute transitions in sequence
       for (const transition of shortestPath) {
-        // Get available transitions for current state of the issue
         const availableTransitions = await this.getTransitions(issueKey)
 
-        // Find the matching transition
         const actualTransition = availableTransitions.find(t =>
           t.id === transition.id ||
           (t.to.name === transition.toName && t.name === transition.name)
@@ -466,7 +453,6 @@ class Jira {
           return false
         }
 
-        // Execute the transition
         await this.request(`/issue/${issueKey}/transitions`, {
           method: 'POST',
           body: JSON.stringify({

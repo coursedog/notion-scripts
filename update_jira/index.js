@@ -93,10 +93,10 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
 
   const { commit: { message: commitMessage } } = data
   const statusMap = {
-    'master': 'Done',
-    'main': 'Done',
-    'staging': 'Staging',
-    'dev': 'Dev'
+    'master': 'Deployed to Production',
+    'main': 'Deployed to Production',
+    'staging': 'Deployed to Staging',
+    'dev': 'Deployed to Staging'
   }
 
   const newStatus = statusMap[branch]
@@ -108,7 +108,7 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
   // Handle special case: staging -> production bulk update
   if ((branch === 'master' || branch === 'main') && commitMessage.includes('from coursedog/staging')) {
     console.log('Bulk updating all Staging issues to Done')
-    await jiraUtil.updateByStatus('Staging', newStatus)
+    await jiraUtil.updateByStatus('Deployed to Staging', newStatus)
     return
   }
 
