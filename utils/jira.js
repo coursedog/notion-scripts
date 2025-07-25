@@ -253,7 +253,7 @@ class Jira {
       console.log(`Found ${issues.length} issues in "${currentStatus}" status`)
 
       for (const issue of issues) {
-        await this.transitionIssueSmart(issue.key, newStatus)
+        await this.transitionIssue(issue.key, newStatus)
       }
 
       return issues.length
@@ -290,7 +290,7 @@ class Jira {
       console.log(`Found ${issues.length} issues mentioning PR ${prUrl}`)
 
       for (const issue of issues) {
-        await this.transitionIssueSmart(issue.key, newStatus)
+        await this.transitionIssue(issue.key, newStatus)
       }
 
       return issues.length
@@ -411,7 +411,7 @@ class Jira {
    * @param {string} targetStatus - Target status
    * @param {Map} transitionGraph - Pre-built transition graph (optional)
    */
-  async transitionIssueSmart(issueKey, targetStatusName) {
+  async transitionIssue(issueKey, targetStatusName) {
     try {
       // Get current issue status
       const issueResponse = await this.request(`/issue/${issueKey}?fields=status`)
