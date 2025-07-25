@@ -56,6 +56,8 @@ async function handlePullRequestEvent(eventData, jiraUtil, githubRepository) {
   const prUrl = `${repositoryName}/pull/${pull_request.number}`
   let targetStatus = null
 
+  console.log('action:', action)
+
   switch (action) {
     case 'converted_to_draft':
       targetStatus = 'In Development'
