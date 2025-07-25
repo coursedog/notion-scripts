@@ -17,13 +17,11 @@ async function run() {
     const JIRA_BASE_URL = core.getInput('JIRA_BASE_URL')
     const JIRA_EMAIL = core.getInput('JIRA_EMAIL')
     const JIRA_API_TOKEN = core.getInput('JIRA_API_TOKEN')
-    const JIRA_PROJECT_KEY = core.getInput('JIRA_PROJECT_KEY')
 
     const jiraUtil = new Jira({
       baseUrl: JIRA_BASE_URL,
       email: JIRA_EMAIL,
       apiToken: JIRA_API_TOKEN,
-      projectKey: JIRA_PROJECT_KEY,
     })
 
     if (GITHUB_EVENT_NAME === 'pull_request' || GITHUB_EVENT_NAME === 'pull_request_target') {

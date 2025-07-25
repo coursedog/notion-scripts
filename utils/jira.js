@@ -1,9 +1,8 @@
 class Jira {
-  constructor({ baseUrl, email, apiToken, projectKey }) {
+  constructor({ baseUrl, email, apiToken }) {
     this.baseUrl = baseUrl
     this.email = email
     this.apiToken = apiToken
-    this.projectKey = projectKey
     this.baseURL = `${baseUrl}/rest/api/3`
     this.stateMachine = null
     this.headers = {
@@ -235,10 +234,6 @@ class Jira {
   async updateByStatus(currentStatus, newStatus) {
     try {
       let jql = `status = "${currentStatus}"`
-      if (this.projectKey) {
-        jql = `project = ${this.projectKey} AND ${jql}`
-      }
-
       const response = await this.request('/search', {
         method: 'POST',
         body: JSON.stringify({
@@ -270,12 +265,7 @@ class Jira {
    */
   async updateByPR(prUrl, newStatus) {
     try {
-      // This searches in description and comments
       let jql = `text ~ "${prUrl}"`
-      if (this.projectKey) {
-        jql = `project = ${this.projectKey} AND ${jql}`
-      }
-
       const response = await this.request('/search', {
         method: 'POST',
         body: JSON.stringify({
@@ -423,8 +413,8 @@ class Jira {
         return true
       }
 
-      // Get the workflow state machine
-      const workflowName = await this.getProjectWorkflowName(this.projectKey)
+      const [ projectKey ] = issueKey.split('-')
+      const workflowName = await this.getProjectWorkflowName(projectKey)
       const stateMachine = await this.getWorkflowStateMachine(workflowName)
 
       // Find shortest path using BFS
