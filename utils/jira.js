@@ -5,6 +5,7 @@ class Jira {
     this.apiToken = apiToken
     this.projectKey = projectKey
     this.baseURL = `${baseUrl}/rest/api/3`
+    this.stateMachine = null
     this.headers = {
       'Authorization': `Basic ${Buffer.from(`${email}:${apiToken}`).toString('base64')}`,
       'Accept': 'application/json',
@@ -42,11 +43,13 @@ class Jira {
    * @returns {Promise<Object>} Complete workflow state machine
    */
   async getWorkflowStateMachine(workflowName) {
+    if (this.stateMachine) {
+      return this.stateMachine
+    }
+
     try {
       const response = await this.request(`/workflow/search?workflowName=${encodeURIComponent(workflowName)}&expand=statuses,transitions`)
       const data = await response.json()
-
-      console.log('GOT DATA', data)
 
       if (!data.values || data.values.length === 0) {
         throw new Error(`Workflow "${workflowName}" not found`)
@@ -98,6 +101,7 @@ class Jira {
         })
       }
 
+      this.stateMachine = stateMachine
       return stateMachine
     } catch (error) {
       console.error(`Error getting workflow state machine:`, error.message)
@@ -208,15 +212,6 @@ class Jira {
   }
 
   /**
-   * Print workflow state machine in a readable format
-   * @param {Object} stateMachine - The workflow state machine
-   */
-  printStateMachine(stateMachine) {
-    console.log(`\n=== WORKFLOW: ${stateMachine.name} ===`)
-    console.log(stateMachine)
-  }
-
-  /**
    * Get available transitions for a Jira issue
    * @param {string} issueKey - Jira issue key (e.g., PROJ-123)
    * @returns {Promise<Array>} Available transitions
@@ -228,39 +223,6 @@ class Jira {
       return data.transitions
     } catch (error) {
       console.error(`Error getting transitions for ${issueKey}:`, error.message)
-      throw error
-    }
-  }
-
-  /**
-   * Transition a Jira issue to a new status
-   * @param {string} issueKey - Jira issue key
-   * @param {string} targetStatus - Name of the target status
-   */
-  async transitionIssue(issueKey, targetStatus) {
-    try {
-      const transitions = await this.getTransitions(issueKey)
-      const transition = transitions.find((t) =>
-        t.to.name.toLowerCase() === targetStatus.toLowerCase()
-      )
-      if (!transition) {
-        console.warn(`No transition found to status "${targetStatus}" for issue ${issueKey}`)
-        return false
-      }
-
-      await this.request(`/issue/${issueKey}/transitions`, {
-        method: 'POST',
-        body: JSON.stringify({
-          transition: {
-            id: transition.id
-          }
-        })
-      })
-
-      console.log(`Successfully transitioned ${issueKey} to ${targetStatus}`)
-      return true
-    } catch (error) {
-      console.error(`Error transitioning ${issueKey}:`, error.message)
       throw error
     }
   }
@@ -291,7 +253,7 @@ class Jira {
       console.log(`Found ${issues.length} issues in "${currentStatus}" status`)
 
       for (const issue of issues) {
-        await this.transitionIssue(issue.key, newStatus)
+        await this.transitionIssueSmart(issue.key, newStatus)
       }
 
       return issues.length
@@ -328,7 +290,7 @@ class Jira {
       console.log(`Found ${issues.length} issues mentioning PR ${prUrl}`)
 
       for (const issue of issues) {
-        await this.transitionIssue(issue.key, newStatus)
+        await this.transitionIssueSmart(issue.key, newStatus)
       }
 
       return issues.length
@@ -376,43 +338,71 @@ class Jira {
   }
 
   /**
-   * Find the shortest path of transitions between two statuses
-   * @param {Map} transitionGraph - The complete transition graph
-   * @param {string} fromStatus - Current status
-   * @param {string} toStatus - Target status
-   * @returns {Array} Array of transitions to perform
-   */
-  findTransitionPath(transitionGraph, fromStatus, toStatus) {
-    if (fromStatus === toStatus) {
-      return []
+  * Find the shortest path between two statuses using BFS
+  * @param {Object} stateMachine - The workflow state machine
+  * @param {string} fromStatusName - Starting status name
+  * @param {string} toStatusName - Target status name
+  * @returns {Array} Shortest path of transitions
+  */
+  findShortestTransitionPath(stateMachine, fromStatusName, toStatusName) {
+    // Convert names to IDs
+    let fromStatusId = null
+    let toStatusId = null
+
+    for (const [statusId, status] of Object.entries(stateMachine.states)) {
+      if (status.name === fromStatusName) fromStatusId = statusId
+      if (status.name === toStatusName) toStatusId = statusId
+    }
+
+    if (!fromStatusId || !toStatusId) {
+      throw new Error(`Status not found: ${!fromStatusId ? fromStatusName : toStatusName}`)
+    }
+
+    if (fromStatusId === toStatusId) {
+      return [] // Already at destination
     }
 
     // BFS to find shortest path
-    const queue = [[fromStatus, []]]
-    const visited = new Set([fromStatus])
+    const queue = [{ statusId: fromStatusId, path: [] }]
+    const visited = new Set([fromStatusId])
 
     while (queue.length > 0) {
-      const [currentStatus, path] = queue.shift()
+      const { statusId: currentId, path } = queue.shift()
 
-      if (!transitionGraph.has(currentStatus)) {
-        continue
-      }
+      const transitions = stateMachine.transitionMap.get(currentId)
+      if (transitions) {
+        for (const [nextStatusId, transition] of transitions) {
+          if (nextStatusId === toStatusId) {
+            // Found the target
+            return [...path, {
+              id: transition.id,
+              name: transition.name,
+              from: currentId,
+              to: nextStatusId,
+              fromName: stateMachine.states[currentId].name,
+              toName: stateMachine.states[nextStatusId].name
+            }]
+          }
 
-      const transitions = transitionGraph.get(currentStatus)
-
-      for (const [nextStatus, transitionId] of transitions) {
-        if (nextStatus === toStatus) {
-          return [...path, { from: currentStatus, to: nextStatus, id: transitionId }]
-        }
-
-        if (!visited.has(nextStatus)) {
-          visited.add(nextStatus)
-          queue.push([nextStatus, [...path, { from: currentStatus, to: nextStatus, id: transitionId }]])
+          if (!visited.has(nextStatusId)) {
+            visited.add(nextStatusId)
+            queue.push({
+              statusId: nextStatusId,
+              path: [...path, {
+                id: transition.id,
+                name: transition.name,
+                from: currentId,
+                to: nextStatusId,
+                fromName: stateMachine.states[currentId].name,
+                toName: stateMachine.states[nextStatusId].name
+              }]
+            })
+          }
         }
       }
     }
 
-    return null
+    return null // No path found
   }
 
   /**
@@ -421,41 +411,51 @@ class Jira {
    * @param {string} targetStatus - Target status
    * @param {Map} transitionGraph - Pre-built transition graph (optional)
    */
-  async transitionIssueSmart(issueKey, targetStatus, transitionGraph = null) {
+  async transitionIssueSmart(issueKey, targetStatusName) {
     try {
+      // Get current issue status
       const issueResponse = await this.request(`/issue/${issueKey}?fields=status`)
       const issueData = await issueResponse.json()
-      const currentStatus = issueData.fields.status.name
+      const currentStatusName = issueData.fields.status.name
 
-      if (currentStatus === targetStatus) {
-        console.log(`Issue ${issueKey} is already in ${targetStatus} status`)
+      if (currentStatusName === targetStatusName) {
+        console.log(`Issue ${issueKey} is already in ${targetStatusName} status`)
         return true
       }
 
-      if (!transitionGraph) {
-        console.log('Building transition graph...')
-        transitionGraph = await this.buildTransitionGraph()
-      }
+      // Get the workflow state machine
+      const workflowName = await this.getProjectWorkflowName(this.projectKey)
+      const stateMachine = await this.getWorkflowStateMachine(workflowName)
 
-      const path = this.findTransitionPath(transitionGraph, currentStatus, targetStatus)
+      // Find shortest path using BFS
+      const shortestPath = this.findShortestTransitionPath(stateMachine, currentStatusName, targetStatusName)
 
-      if (!path) {
-        console.error(`No transition path found from ${currentStatus} to ${targetStatus}`)
+      if (!shortestPath) {
+        console.error(`No transition path found from ${currentStatusName} to ${targetStatusName}`)
         return false
       }
 
-      console.log(`Found transition path: ${path.map(t => `${t.from} → ${t.to}`).join(' → ')}`)
+      console.log(`Found shortest transition path with ${shortestPath.length} steps:`)
+      shortestPath.forEach(t => console.log(`  ${t.fromName} → ${t.toName} (${t.name})`))
 
       // Execute transitions in sequence
-      for (const transition of path) {
+      for (const transition of shortestPath) {
+        // Get available transitions for current state of the issue
         const availableTransitions = await this.getTransitions(issueKey)
-        const actualTransition = availableTransitions.find(t => t.to.name === transition.to)
+
+        // Find the matching transition
+        const actualTransition = availableTransitions.find(t =>
+          t.id === transition.id ||
+          (t.to.name === transition.toName && t.name === transition.name)
+        )
 
         if (!actualTransition) {
-          console.error(`Transition to ${transition.to} not available for issue ${issueKey}`)
+          console.error(`Transition "${transition.name}" to ${transition.toName} not available for issue ${issueKey}`)
+          console.error(`Available transitions:`, availableTransitions.map(t => `${t.name} → ${t.to.name}`))
           return false
         }
 
+        // Execute the transition
         await this.request(`/issue/${issueKey}/transitions`, {
           method: 'POST',
           body: JSON.stringify({
@@ -465,13 +465,15 @@ class Jira {
           })
         })
 
-        console.log(`Transitioned ${issueKey}: ${transition.from} → ${transition.to}`)
+        console.log(`✓ Transitioned ${issueKey}: ${transition.fromName} → ${transition.toName}`)
 
         // Small delay to ensure Jira processes the transition
         await new Promise(resolve => setTimeout(resolve, 500))
       }
 
+      console.log(`Successfully transitioned ${issueKey} to ${targetStatusName}`)
       return true
+
     } catch (error) {
       console.error(`Error in smart transition for ${issueKey}:`, error.message)
       throw error
