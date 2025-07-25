@@ -24,11 +24,8 @@ async function run() {
       apiToken: JIRA_API_TOKEN,
     })
 
-    console.log(GITHUB_EVENT_NAME)
-
     if (GITHUB_EVENT_NAME === 'pull_request' || GITHUB_EVENT_NAME === 'pull_request_target') {
       const eventData = require(GITHUB_EVENT_PATH)
-      console.log(eventData)
 
       await handlePullRequestEvent(eventData, jiraUtil, GITHUB_REPOSITORY)
       return
@@ -42,12 +39,10 @@ async function run() {
     ]
 
     if (allowedBranches.indexOf(GITHUB_REF) !== -1) {
-      console.log('will handle push event!')
       const branchName = GITHUB_REF.split('/').pop()
       await handlePushEvent(branchName, jiraUtil, GITHUB_REPOSITORY, GITHUB_TOKEN)
     }
   } catch (error) {
-    console.log('Failed to update task statuses:', error)
     core.setFailed(error.message)
   }
 }
@@ -112,7 +107,6 @@ async function handlePullRequestEvent(eventData, jiraUtil) {
  * Handle push events to branches
  */
 async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) {
-  console.log('HANDLING PUSH EVENT')
   const octokit = new Octokit({
     auth: githubToken,
   })
