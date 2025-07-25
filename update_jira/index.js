@@ -29,9 +29,8 @@ async function run() {
     const workflowName = await jiraUtil.getProjectWorkflowName('ALL')
     console.log('got workflow!', workflowName)
 
-    const smResponse = await jiraUtil.getWorkflowStateMachine(workflowName)
-    const sm = await smResponse.json()
-    jiraUtil.printStateMachine(sm)
+    const stateMachine = await jiraUtil.getWorkflowStateMachine(workflowName)
+    jiraUtil.printStateMachine(stateMachine)
 
     if (GITHUB_EVENT_NAME === 'pull_request' || GITHUB_EVENT_NAME === 'pull_request_target') {
       const eventData = require(GITHUB_EVENT_PATH)
