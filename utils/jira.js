@@ -213,52 +213,7 @@ class Jira {
    */
   printStateMachine(stateMachine) {
     console.log(`\n=== WORKFLOW: ${stateMachine.name} ===`)
-
-    console.log('\n--- STATES ---')
-    console.log(JSON.stringify(stateMachine), '\n\n\n', 'AAAAAAAAAAAAAAAAA')
-    for (const [id, state] of Object.entries(stateMachine.states)) {
-      console.log(`  [${id}] ${state.name} (${state.statusCategory.name})`)
-    }
-
-    console.log('\n--- TRANSITIONS ---')
-    for (const transition of stateMachine.transitions) {
-      const fromStates = transition.from.length > 0
-        ? transition.from.map(id => stateMachine.states[id]?.name || id).join(', ')
-        : 'ANY'
-      const toState = stateMachine.states[transition.to]?.name || transition.to
-
-      console.log(`  [${transition.id}] "${transition.name}": ${fromStates} → ${toState}`)
-      if (transition.hasScreen) {
-        console.log(`    (Has screen)`)
-      }
-    }
-
-    console.log('\n--- TRANSITION PATHS ---')
-    // Show example paths between common states
-    const commonPairs = [
-      ['To Do', 'Done'],
-      ['In Progress', 'To Do'],
-      ['Done', 'In Progress']
-    ]
-
-    for (const [from, to] of commonPairs) {
-      try {
-        const paths = this.findAllTransitionPaths(stateMachine, from, to)
-        if (paths.length > 0) {
-          console.log(`\n  ${from} → ${to}: ${paths.length} path(s) found`)
-          paths.forEach((path, index) => {
-            if (path.length === 0) {
-              console.log(`    Path ${index + 1}: Already at destination`)
-            } else {
-              const pathStr = path.map(t => t.name).join(' → ')
-              console.log(`    Path ${index + 1}: ${pathStr}`)
-            }
-          })
-        }
-      } catch (e) {
-        // Skip if states don't exist
-      }
-    }
+    console.log(stateMachine)
   }
 
   /**
