@@ -232,12 +232,5 @@ function extractJiraIssueKeys(pullRequest) {
     }
   }
 
-  if (pullRequest.body) {
-    const bodyMatches = pullRequest.body.match(jiraKeyPattern)
-    if (bodyMatches) {
-      bodyMatches.forEach(key => keys.add(key))
-    }
-  }
-
   return Array.from(keys)
 }
