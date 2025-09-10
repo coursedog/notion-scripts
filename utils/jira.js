@@ -223,6 +223,34 @@ class Jira {
   }
 
   /**
+   * Find issues with a specific status
+   * @param {string} status - Status to search for
+   * @param {number} maxResults - Maximum number of results to return (default: 100)
+   * @param {Array<string>} fields - Fields to include in the response (default: ['key', 'summary', 'status'])
+   * @returns {Promise<Array>} Array of issues matching the status
+   */
+  async findByStatus(status, maxResults = 100, fields = ['key', 'summary', 'status']) {
+    try {
+      const jql = `status = "${status}"`
+      const response = await this.request('/search', {
+        method: 'POST',
+        body: JSON.stringify({
+          jql,
+          fields,
+          maxResults
+        })
+      })
+
+      const data = await response.json()
+      console.log(`Found ${data.issues.length} issues in "${status}" status`)
+      return data.issues
+    } catch (error) {
+      console.error(`Error finding issues by status:`, error.message)
+      throw error
+    }
+  }
+
+  /**
    * Search for issues with a specific status and update them
    * @param {string} currentStatus - Current status to search for
    * @param {string} newStatus - New status to transition to
@@ -230,18 +258,7 @@ class Jira {
    */
   async updateByStatus(currentStatus, newStatus, fields = {}) {
     try {
-      let jql = `status = "${currentStatus}"`
-      const response = await this.request('/search', {
-        method: 'POST',
-        body: JSON.stringify({
-          jql,
-          fields: ['key', 'summary', 'status'],
-          maxResults: 100
-        })
-      })
-
-      const data = await response.json()
-      const issues = data.issues
+      const issues = await this.findByStatus(currentStatus)
       console.log(`Found ${issues.length} issues in "${currentStatus}" status`)
 
       const settledIssuePromises = await Promise.allSettled(
@@ -255,7 +272,6 @@ class Jira {
 
       const rejected = settledIssuePromises.filter((result) => result.status === 'rejected')
       const fullfilled = settledIssuePromises.filter((result) => result.status === 'fulfilled')
-
       console.log(`Sucessfully updated ${fullfilled.length} isssues.`)
 
       if (rejected) {

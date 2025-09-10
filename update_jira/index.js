@@ -5,22 +5,34 @@ const Jira = require('./../utils/jira')
 const statusMap = {
   'master': {
     status: 'Deployed to Production',
-    fields: {}
+    fields: {
+      // prod release timestamp
+      customfield_11475: new Date(),
+      customfield_11473: 'Production',
+    }
   },
   'main': {
     status: 'Deployed to Production',
-    fields: {}
+    fields: {
+      // prod release timestamp
+      customfield_11475: new Date(),
+      customfield_11473: 'Production',
+    }
   },
   'staging': {
     status: 'Deployed to Staging',
     fields: {
       resolution: 'Done',
+      // staging release timestamp
+      customfield_11474: new Date(),
+      customfield_11473: 'Staging',
     }
   },
   'dev': {
     status: 'Deployed to Staging',
     fields: {
-      resolution: 'Done'
+      resolution: 'Done',
+      customfield_11473: 'Development',
     }
   }
 }
@@ -201,10 +213,25 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
 
   // Handle special case: staging -> production bulk update
   if ((branch === 'master' || branch === 'main')) {
+    if (commitMessage === 'from coursedog/staging') {
+
+    } else if (commitMessage.match(/#+[0-9]/)) {
+      // direct from open PR to staging
+      const prNumber = extractPrNumber(commitMessage)
+      const prUrl = `${repositoryName}/pull/${prNumber}`
+      if (!prNumber) return
+      jiraUtil.updateByPR(prUrl, newStatus, preparedFields)
+    }
+
     console.log('Bulk updating all Staging issues to Done')
     const issues = await jiraUtil.updateByStatus('Deployed to Staging', newStatus, preparedFields)
 
     return
+  }
+
+  if (branch === 'staging') {
+    console.log('Bulk updating all Deployed to Dev issues to Deployed to Staging')
+    const issues = await jiraUtil.updateByStatus('Deployed to Dev', newStatus, preparedFields)
   }
 
   // Handle PR merges (look for PR number in commit message)

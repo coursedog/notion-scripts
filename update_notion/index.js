@@ -59,7 +59,7 @@ async function _updateNotionStatuses (branch) {
   })
 
   const [ githubOwner, repositoryName ] = GITHUB_REPOSITORY.split('/')
-  
+
   // Get most recent commit to branch
   const { data } = await octokit.rest.repos.getCommit({
     owner: githubOwner,
@@ -103,7 +103,7 @@ async function _updateNotionStatuses (branch) {
         notionUtil.updateByPR(`${repositoryName}/pull/${prNumber}`, 'Completed (Staging)')
       }
       break
-  
+
     default:
       break
   }
