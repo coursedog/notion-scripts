@@ -244,11 +244,25 @@ class Jira {
       const issues = data.issues
       console.log(`Found ${issues.length} issues in "${currentStatus}" status`)
 
-      for (const issue of issues) {
-        await this.transitionIssue(issue.key, newStatus, ['Blocked', 'Rejected'], fields)
+      const settledIssuePromises = await Promise.allSettled(
+        issues.map((issue) => this.transitionIssue(
+          issue.key,
+          newStatus,
+          ['Blocked', 'Rejected'],
+          fields
+        ))
+      )
+
+      const rejected = settledIssuePromises.filter((result) => result.status === 'rejected')
+      const fullfilled = settledIssuePromises.filter((result) => result.status === 'fulfilled')
+
+      console.log(`Sucessfully updated ${fullfilled.length} isssues.`)
+
+      if (rejected) {
+        console.log(`Failed to update ${rejected.length} isssues.`)
       }
 
-      return issues.length
+      return issues
     } catch (error) {
       console.error(`Error updating issues by status:`, error.message)
       throw error
@@ -319,6 +333,76 @@ class Jira {
       return statuses
     } catch (error) {
       console.error(`Error getting statuses:`, error.message)
+      throw error
+    }
+  }
+
+  /**
+   * Update custom field on an issue
+   * @param {string} issueKey - Jira issue key
+   * @param {string} customFieldId - Custom field ID (e.g., 'customfield_10001')
+   * @param {any} value - Value to set for the custom field
+   * @returns {Promise<boolean>} Success status
+   */
+  async updateCustomField(issueKey, customFieldId, value) {
+    try {
+      const updatePayload = {
+        fields: {
+          [customFieldId]: value
+        }
+      }
+
+      await this.request(`/issue/${issueKey}`, {
+        method: 'PUT',
+        body: JSON.stringify(updatePayload)
+      })
+
+      console.log(`✓ Updated custom field ${customFieldId} for issue ${issueKey}`)
+      return true
+    } catch (error) {
+      console.error(`Error updating custom field ${customFieldId} for ${issueKey}:`, error.message)
+      throw error
+    }
+  }
+
+  /**
+   * Update multiple custom fields on an issue
+   * @param {string} issueKey - Jira issue key
+   * @param {Object} customFields - Object with custom field IDs as keys and values as values
+   * @returns {Promise<boolean>} Success status
+   */
+  async updateCustomFields(issueKey, customFields) {
+    try {
+      const updatePayload = {
+        fields: customFields
+      }
+
+      await this.request(`/issue/${issueKey}`, {
+        method: 'PUT',
+        body: JSON.stringify(updatePayload)
+      })
+
+      console.log(`✓ Updated ${Object.keys(customFields).length} custom fields for issue ${issueKey}`)
+      return true
+    } catch (error) {
+      console.error(`Error updating custom fields for ${issueKey}:`, error.message)
+      throw error
+    }
+  }
+
+  /**
+   * Get custom field value from an issue
+   * @param {string} issueKey - Jira issue key
+   * @param {string} customFieldId - Custom field ID (e.g., 'customfield_10001')
+   * @returns {Promise<any>} Custom field value
+   */
+  async getCustomField(issueKey, customFieldId) {
+    try {
+      const response = await this.request(`/issue/${issueKey}?fields=${customFieldId}`)
+      const issueData = await response.json()
+      return issueData.fields[customFieldId]
+    } catch (error) {
+      console.error(`Error getting custom field ${customFieldId} for ${issueKey}:`, error.message)
       throw error
     }
   }

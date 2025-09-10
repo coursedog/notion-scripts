@@ -200,9 +200,10 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
   const preparedFields = await prepareFields(customFields, jiraUtil)
 
   // Handle special case: staging -> production bulk update
-  if ((branch === 'master' || branch === 'main') && commitMessage.includes('from coursedog/staging')) {
+  if ((branch === 'master' || branch === 'main')) {
     console.log('Bulk updating all Staging issues to Done')
-    await jiraUtil.updateByStatus('Deployed to Staging', newStatus, preparedFields)
+    const issues = await jiraUtil.updateByStatus('Deployed to Staging', newStatus, preparedFields)
+
     return
   }
 
