@@ -231,15 +231,9 @@ class Jira {
    */
   async findByStatus(status, maxResults = 100, fields = ['key', 'summary', 'status']) {
     try {
-      const jql = `status = "${status}"`
-      const response = await this.request('/search', {
-        method: 'POST',
-        body: JSON.stringify({
-          jql,
-          fields,
-          maxResults
-        })
-      })
+      const jql = encodeURIComponent(`status = "${status}"`)
+      const fieldsParam = encodeURIComponent(fields.join(','))
+      const response = await this.request(`/search?jql=${jql}&fields=${fieldsParam}&maxResults=${maxResults}`)
 
       const data = await response.json()
       console.log(`Found ${data.issues.length} issues in "${status}" status`)
@@ -293,15 +287,9 @@ class Jira {
    */
   async updateByPR(prUrl, newStatus, fields = {}) {
     try {
-      let jql = `text ~ "${prUrl}"`
-      const response = await this.request('/search', {
-        method: 'POST',
-        body: JSON.stringify({
-          jql,
-          fields: ['key', 'summary', 'status', 'description'],
-          maxResults: 50
-        })
-      })
+      const jql = encodeURIComponent(`text ~ "${prUrl}"`)
+      const fieldsParam = encodeURIComponent('key,summary,status,description')
+      const response = await this.request(`/search?jql=${jql}&fields=${fieldsParam}&maxResults=50`)
 
       const data = await response.json()
       const issues = data.issues
