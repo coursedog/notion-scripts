@@ -258,7 +258,7 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
 
     try {
       // Get issue keys from commit history
-      const commitHistoryIssues = await jiraUtil.extractIssueKeysFromGithubContext(github.context)
+      const commitHistoryIssues = await jiraUtil.extractIssueKeysFromGitHubContext(github.context)
       console.log(commitHistoryIssues)
 
       return
