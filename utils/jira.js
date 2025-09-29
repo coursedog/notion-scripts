@@ -232,7 +232,7 @@ class Jira {
   async findByStatus(status, maxResults = 100, fields = ['key', 'summary', 'status']) {
     try {
       const jql = `status = "${status}"`
-      const response = await this.request('/search', {
+      const response = await this.request('/search/jql', {
         method: 'POST',
         body: JSON.stringify({
           jql,
@@ -294,7 +294,7 @@ class Jira {
   async updateByPR(prUrl, newStatus, fields = {}) {
     try {
       let jql = `text ~ "${prUrl}"`
-      const response = await this.request('/search', {
+      const response = await this.request('/search/jql', {
         method: 'POST',
         body: JSON.stringify({
           jql,
@@ -649,14 +649,6 @@ class Jira {
     }
 
     console.log(`Updating ${issueKeys.length} issues to status: ${targetStatus}`)
-
-    console.log(issueKeys)
-
-    return {
-      successful: false,
-      failed: issueKeys.length,
-      errors: [],
-    }
 
     const results = await Promise.allSettled(
       issueKeys.map(issueKey =>

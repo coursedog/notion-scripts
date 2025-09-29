@@ -271,8 +271,10 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
         )
 
         console.log(`Staging deployment results: ${updateResults.successful} successful, ${updateResults.failed} failed`)
+        return
       } else {
         console.log('No Jira issues found in staging commit history')
+        return
       }
     } catch (error) {
       console.error('Error processing staging commit history:', error.message)
