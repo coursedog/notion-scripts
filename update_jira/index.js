@@ -3,8 +3,8 @@ const github = require('@actions/github')
 const { Octokit } = require('@octokit/rest')
 const Jira = require('./../utils/jira')
 
-const stagingReleaseEnvId = 11942
-const prodReleaseEnvId = 11943
+const stagingReleaseEnvId = '11942'
+const prodReleaseEnvId = '11943'
 
 const statusMap = {
   'master': {
