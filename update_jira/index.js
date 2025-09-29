@@ -3,6 +3,9 @@ const github = require('@actions/github')
 const { Octokit } = require('@octokit/rest')
 const Jira = require('./../utils/jira')
 
+const stagingReleaseEnvId = 11942
+const prodReleaseEnvId = 11943
+
 const statusMap = {
   'master': {
     status: 'Done',
@@ -12,7 +15,7 @@ const statusMap = {
     customFields: {
       // prod release timestamp
       customfield_11475: new Date(),
-      customfield_11473: { name: 'Production' }
+      customfield_11473: { id: prodReleaseEnvId }
     }
   },
   'main': {
@@ -23,7 +26,7 @@ const statusMap = {
     customFields: {
       // prod release timestamp
       customfield_11475: new Date(),
-      customfield_11473: { name: 'Production' }
+      customfield_11473: { id: prodReleaseEnvId }
     }
   },
   'staging': {
@@ -34,7 +37,7 @@ const statusMap = {
     customFields: {
       // staging release timestamp
       customfield_11474: new Date(),
-      customfield_11473: { name: 'Staging' }
+      customfield_11473: { id: stagingReleaseEnvId }
     }
   },
   'dev': {
