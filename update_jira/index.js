@@ -6,36 +6,43 @@ const Jira = require('./../utils/jira')
 const statusMap = {
   'master': {
     status: 'Done',
-    fields: {
-      resolution: 'Done',
+    transitionFields: {
+      resolution: 'Done'
+    },
+    customFields: {
       // prod release timestamp
       customfield_11475: new Date(),
-      customfield_11473: 'Production',
+      customfield_11473: 'Production'
     }
   },
   'main': {
     status: 'Done',
-    fields: {
-      resolution: 'Done',
+    transitionFields: {
+      resolution: 'Done'
+    },
+    customFields: {
       // prod release timestamp
       customfield_11475: new Date(),
-      customfield_11473: 'Production',
+      customfield_11473: 'Production'
     }
   },
   'staging': {
     status: 'Deployed to Staging',
-    fields: {
-      resolution: 'Done',
+    transitionFields: {
+      resolution: 'Done'
+    },
+    customFields: {
       // staging release timestamp
       customfield_11474: new Date(),
-      customfield_11473: 'Staging',
+      customfield_11473: 'Staging'
     }
   },
   'dev': {
     status: 'Deployed to Dev',
-    fields: {
-      resolution: 'Done',
-    }
+    transitionFields: {
+      resolution: 'Done'
+    },
+    customFields: {}
   }
 }
 
@@ -120,6 +127,27 @@ async function prepareFields(fields, jiraUtil) {
 }
 
 /**
+ * Update issue with transition and then update custom fields separately
+ */
+async function updateIssueWithCustomFields(jiraUtil, issueKey, targetStatus, excludeStates, transitionFields, customFields) {
+  try {
+    // First, transition the issue with only transition-allowed fields
+    const preparedTransitionFields = await prepareFields(transitionFields, jiraUtil)
+    await jiraUtil.transitionIssue(issueKey, targetStatus, excludeStates, preparedTransitionFields)
+
+    // Then, if there are custom fields to update, update them separately
+    if (customFields && Object.keys(customFields).length > 0) {
+      await jiraUtil.updateCustomFields(issueKey, customFields)
+    }
+
+    return true
+  } catch (error) {
+    console.error(`Failed to update ${issueKey}:`, error.message)
+    throw error
+  }
+}
+
+/**
  * Handle pull request events (open, close, etc)
  */
 async function handlePullRequestEvent(eventData, jiraUtil) {
@@ -134,6 +162,7 @@ async function handlePullRequestEvent(eventData, jiraUtil) {
   console.log(`Found Jira issues: ${issueKeys.join(', ')}`)
 
   let targetStatus = null
+  let transitionFields = {}
   let customFields = {}
   const targetBranch = pull_request.base.ref
 
@@ -156,10 +185,11 @@ async function handlePullRequestEvent(eventData, jiraUtil) {
         const branchConfig = statusMap[targetBranch]
         if (branchConfig) {
           targetStatus = branchConfig.status
-          customFields = branchConfig.fields || {}
+          transitionFields = branchConfig.transitionFields || {}
+          customFields = branchConfig.customFields || {}
         } else {
           targetStatus = 'Done'
-          customFields = { resolution: 'Done' }
+          transitionFields = { resolution: 'Done' }
         }
       } else {
         console.log('PR closed without merging, skipping status update')
@@ -172,11 +202,16 @@ async function handlePullRequestEvent(eventData, jiraUtil) {
   }
 
   if (targetStatus) {
-    const preparedFields = await prepareFields(customFields, jiraUtil)
-
     for (const issueKey of issueKeys) {
       try {
-        await jiraUtil.transitionIssue(issueKey, targetStatus, ['Blocked', 'Rejected'], preparedFields)
+        await updateIssueWithCustomFields(
+          jiraUtil,
+          issueKey,
+          targetStatus,
+          ['Blocked', 'Rejected'],
+          transitionFields,
+          customFields
+        )
       } catch (error) {
         console.error(`Failed to update ${issueKey}:`, error.message)
       }
@@ -209,8 +244,8 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
   }
 
   const newStatus = branchConfig.status
-  const customFields = branchConfig.fields || {}
-  const preparedFields = await prepareFields(customFields, jiraUtil)
+  const transitionFields = branchConfig.transitionFields || {}
+  const customFields = branchConfig.customFields || {}
 
   const shouldCheckCommitHistory = ['master', 'main', 'staging'].includes(branch)
 
@@ -225,11 +260,13 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
       if (commitHistoryIssues.length > 0) {
         console.log(`Found ${commitHistoryIssues.length} issues in production commit history`)
 
-        const updateResults = await jiraUtil.updateIssuesFromCommitHistory(
+        const updateResults = await updateIssuesFromCommitHistoryWithCustomFields(
+          jiraUtil,
           commitHistoryIssues,
           newStatus,
           ['Blocked', 'Rejected'],
-          preparedFields
+          transitionFields,
+          customFields
         )
 
         console.log(`Production deployment results: ${updateResults.successful} successful, ${updateResults.failed} failed`)
@@ -246,7 +283,7 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
       const prUrl = `${repositoryName}/pull/${prNumber}`
       if (prNumber) {
         console.log(`Also updating issues from PR ${prUrl} to production status`)
-        await jiraUtil.updateByPR(prUrl, newStatus, preparedFields)
+        await updateByPRWithCustomFields(jiraUtil, prUrl, newStatus, transitionFields, customFields)
       }
     }
     return
@@ -263,11 +300,13 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
         console.log(`Found ${commitHistoryIssues.length} issues in staging commit history`)
 
         // Update issues found in commit history
-        const updateResults = await jiraUtil.updateIssuesFromCommitHistory(
+        const updateResults = await updateIssuesFromCommitHistoryWithCustomFields(
+          jiraUtil,
           commitHistoryIssues,
           newStatus,
           ['Blocked', 'Rejected'],
-          preparedFields
+          transitionFields,
+          customFields
         )
 
         console.log(`Staging deployment results: ${updateResults.successful} successful, ${updateResults.failed} failed`)
@@ -285,7 +324,7 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
       const prNumber = prMatch[1]
       const prUrl = `${repositoryName}/pull/${prNumber}`
       console.log(`Also updating issues from PR ${prUrl} to staging status`)
-      await jiraUtil.updateByPR(prUrl, newStatus, preparedFields)
+      await updateByPRWithCustomFields(jiraUtil, prUrl, newStatus, transitionFields, customFields)
     }
     return
   }
@@ -295,7 +334,7 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
     const prNumber = prMatch[1]
     const prUrl = `${repositoryName}/pull/${prNumber}`
     console.log(`Updating issues mentioning PR ${prUrl} to status: ${newStatus}`)
-    await jiraUtil.updateByPR(prUrl, newStatus, preparedFields)
+    await updateByPRWithCustomFields(jiraUtil, prUrl, newStatus, transitionFields, customFields)
   }
 
   // Additionally, for important branches, check commit history for issue keys
@@ -308,11 +347,13 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
         console.log(`Found ${commitHistoryIssues.length} additional issues in commit history for ${branch} branch`)
 
         // Update issues found in commit history
-        const updateResults = await jiraUtil.updateIssuesFromCommitHistory(
+        const updateResults = await updateIssuesFromCommitHistoryWithCustomFields(
+          jiraUtil,
           commitHistoryIssues,
           newStatus,
           ['Blocked', 'Rejected'],
-          preparedFields
+          transitionFields,
+          customFields
         )
 
         console.log(`Commit history update results: ${updateResults.successful} successful, ${updateResults.failed} failed`)
@@ -321,6 +362,76 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
       console.error('Error processing commit history:', error.message)
       // Don't fail the entire action if commit history processing fails
     }
+  }
+}
+
+/**
+ * Update issues from commit history with separate custom field updates
+ */
+async function updateIssuesFromCommitHistoryWithCustomFields(jiraUtil, issueKeys, targetStatus, excludeStates, transitionFields, customFields) {
+  if (!issueKeys || issueKeys.length === 0) {
+    console.log('No issue keys provided for update')
+    return { successful: 0, failed: 0, errors: [] }
+  }
+
+  console.log(`Updating ${issueKeys.length} issues to status: ${targetStatus}`)
+
+  const results = await Promise.allSettled(
+    issueKeys.map(issueKey =>
+      updateIssueWithCustomFields(jiraUtil, issueKey, targetStatus, excludeStates, transitionFields, customFields)
+    )
+  )
+
+  const successful = results.filter(result => result.status === 'fulfilled').length
+  const failed = results.filter(result => result.status === 'rejected')
+  const errors = failed.map(result => result.reason?.message || 'Unknown error')
+
+  console.log(`Update summary: ${successful} successful, ${failed.length} failed`)
+  if (failed.length > 0) {
+    console.log('Failed updates:', errors)
+  }
+
+  return {
+    successful,
+    failed: failed.length,
+    errors
+  }
+}
+
+/**
+ * Update issues by PR with separate custom field updates
+ */
+async function updateByPRWithCustomFields(jiraUtil, prUrl, newStatus, transitionFields, customFields) {
+  try {
+    let jql = `text ~ "${prUrl}"`
+    const response = await jiraUtil.request('/search/jql', {
+      method: 'POST',
+      body: JSON.stringify({
+        jql,
+        fields: ['key', 'summary', 'status', 'description'],
+        maxResults: 50
+      })
+    })
+
+    const data = await response.json()
+    const issues = data.issues
+    console.log(`Found ${issues.length} issues mentioning PR ${prUrl}`)
+
+    for (const issue of issues) {
+      await updateIssueWithCustomFields(
+        jiraUtil,
+        issue.key,
+        newStatus,
+        ['Blocked', 'Rejected'],
+        transitionFields,
+        customFields
+      )
+    }
+
+    return issues.length
+  } catch (error) {
+    console.error(`Error updating issues by PR:`, error.message)
+    throw error
   }
 }
 
