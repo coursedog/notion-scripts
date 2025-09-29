@@ -553,6 +553,92 @@ class Jira {
   }
 
   /**
+   * Extract Jira issue keys from git commit history
+   * @param {string} fromRef - Starting git reference (e.g., 'HEAD~10', commit hash)
+   * @param {string} toRef - Ending git reference (e.g., 'HEAD', commit hash)
+   * @param {string} cwd - Working directory for git commands (optional)
+   * @returns {Promise<Array<string>>} Array of unique Jira issue keys found in commit messages
+   */
+  async getIssueKeysFromCommitHistory(fromRef = 'HEAD~50', toRef = 'HEAD', cwd = process.cwd()) {
+    try {
+      const { execSync } = require('child_process')
+
+      // Get commit messages from git log
+      const gitCommand = `git log ${fromRef}..${toRef} --pretty=format:"%s %b" --no-merges`
+      const commitMessages = execSync(gitCommand, {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'ignore'] // Suppress stderr to avoid noise
+      })
+
+      // Extract Jira issue keys using regex pattern
+      const jiraKeyPattern = /[A-Z]+-[0-9]+/g
+      const issueKeys = new Set()
+
+      if (commitMessages) {
+        const matches = commitMessages.match(jiraKeyPattern)
+        if (matches) {
+          matches.forEach(key => issueKeys.add(key))
+        }
+      }
+
+      const uniqueKeys = Array.from(issueKeys)
+      console.log(`Found ${uniqueKeys.length} unique Jira issue keys in commit history (${fromRef}..${toRef}):`, uniqueKeys)
+
+      return uniqueKeys
+    } catch (error) {
+      console.error('Error reading git commit history:', error.message)
+      return []
+    }
+  }
+
+  /**
+   * Update multiple issues found in commit history to a target status
+   * @param {Array<string>} issueKeys - Array of Jira issue keys
+   * @param {string} targetStatus - Target status name
+   * @param {Array<string>} excludeStates - Array of state names to exclude from paths (optional)
+   * @param {Object} fields - Additional fields to set during transition
+   * @returns {Promise<Object>} Summary of update results
+   */
+  async updateIssuesFromCommitHistory(issueKeys, targetStatus, excludeStates = ['Blocked', 'Rejected'], fields = {}) {
+    if (!issueKeys || issueKeys.length === 0) {
+      console.log('No issue keys provided for update')
+      return { successful: 0, failed: 0, errors: [] }
+    }
+
+    console.log(`Updating ${issueKeys.length} issues to status: ${targetStatus}`)
+
+    console.log(issueKeys)
+
+    return {
+      successful: false,
+      failed: issueKeys.length,
+      errors: [],
+    }
+
+    const results = await Promise.allSettled(
+      issueKeys.map(issueKey =>
+        this.transitionIssue(issueKey, targetStatus, excludeStates, fields)
+      )
+    )
+
+    const successful = results.filter(result => result.status === 'fulfilled').length
+    const failed = results.filter(result => result.status === 'rejected')
+    const errors = failed.map(result => result.reason?.message || 'Unknown error')
+
+    console.log(`Update summary: ${successful} successful, ${failed.length} failed`)
+    if (failed.length > 0) {
+      console.log('Failed updates:', errors)
+    }
+
+    return {
+      successful,
+      failed: failed.length,
+      errors
+    }
+  }
+
+  /**
    * Transition an issue through multiple states to reach target
    * @param {string} issueKey - Jira issue key
    * @param {string} targetStatus - Target status name

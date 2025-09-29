@@ -4,16 +4,18 @@ const Jira = require('./../utils/jira')
 
 const statusMap = {
   'master': {
-    status: 'Deployed to Production',
+    status: 'Done',
     fields: {
+      resolution: 'Done',
       // prod release timestamp
       customfield_11475: new Date(),
       customfield_11473: 'Production',
     }
   },
   'main': {
-    status: 'Deployed to Production',
+    status: 'Done',
     fields: {
+      resolution: 'Done',
       // prod release timestamp
       customfield_11475: new Date(),
       customfield_11473: 'Production',
@@ -29,10 +31,9 @@ const statusMap = {
     }
   },
   'dev': {
-    status: 'Deployed to Staging',
+    status: 'Deployed to Dev',
     fields: {
       resolution: 'Done',
-      customfield_11473: 'Development',
     }
   }
 }
@@ -208,40 +209,116 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
 
   const newStatus = branchConfig.status
   const customFields = branchConfig.fields || {}
-
   const preparedFields = await prepareFields(customFields, jiraUtil)
 
+  const shouldCheckCommitHistory = ['master', 'main', 'staging'].includes(branch)
+
   const prMatch = commitMessage.match(/#([0-9]+)/)
+
+  // Handle staging to production deployment
   if ((branch === 'master' || branch === 'main')) {
-    // Handle special case: staging -> production bulk update
-    if (commitMessage === 'from coursedog/staging') {
-      console.log('Bulk updating all Staging issues to Done')
-      const issues = await jiraUtil.updateByStatus('Deployed to Staging', newStatus, preparedFields)
-      console.log(`Issues deployed to production: ${issues.length}`)
-      return
+    console.log('Production deployment: extracting issues from commit history')
+
+    try {
+      const commitHistoryIssues = await jiraUtil.getIssueKeysFromCommitHistory('HEAD~100', 'HEAD')
+      if (commitHistoryIssues.length > 0) {
+        console.log(`Found ${commitHistoryIssues.length} issues in production commit history`)
+
+        const updateResults = await jiraUtil.updateIssuesFromCommitHistory(
+          commitHistoryIssues,
+          newStatus,
+          ['Blocked', 'Rejected'],
+          preparedFields
+        )
+
+        console.log(`Production deployment results: ${updateResults.successful} successful, ${updateResults.failed} failed`)
+      } else {
+        console.log('No Jira issues found in production commit history')
+      }
+    } catch (error) {
+      console.error('Error processing production commit history:', error.message)
     }
 
-    // direct from open PR to staging
+    // Also handle direct PR merges to production
     if (prMatch) {
       const prNumber = extractPrNumber(commitMessage)
       const prUrl = `${repositoryName}/pull/${prNumber}`
-      if (!prNumber) return
-      await jiraUtil.updateByPR(prUrl, newStatus, preparedFields)
-      return
+      if (prNumber) {
+        console.log(`Also updating issues from PR ${prUrl} to production status`)
+        await jiraUtil.updateByPR(prUrl, newStatus, preparedFields)
+      }
     }
+    return
   }
 
+  // Handle dev to staging deployment
   if (branch === 'staging') {
-    console.log('Bulk updating all Deployed to Dev issues to Deployed to Staging')
-    await jiraUtil.updateByStatus('Deployed to Staging', newStatus, preparedFields)
+    console.log('Staging deployment: extracting issues from commit history')
+
+    try {
+      // Get issue keys from commit history
+      const commitHistoryIssues = await jiraUtil.getIssueKeysFromCommitHistory('HEAD~100', 'HEAD')
+
+      if (commitHistoryIssues.length > 0) {
+        console.log(`Found ${commitHistoryIssues.length} issues in staging commit history`)
+
+        // Update issues found in commit history
+        const updateResults = await jiraUtil.updateIssuesFromCommitHistory(
+          commitHistoryIssues,
+          newStatus,
+          ['Blocked', 'Rejected'],
+          preparedFields
+        )
+
+        console.log(`Staging deployment results: ${updateResults.successful} successful, ${updateResults.failed} failed`)
+      } else {
+        console.log('No Jira issues found in staging commit history')
+      }
+    } catch (error) {
+      console.error('Error processing staging commit history:', error.message)
+    }
+
+    // Also handle direct PR merges to staging
+    if (prMatch) {
+      const prNumber = prMatch[1]
+      const prUrl = `${repositoryName}/pull/${prNumber}`
+      console.log(`Also updating issues from PR ${prUrl} to staging status`)
+      await jiraUtil.updateByPR(prUrl, newStatus, preparedFields)
+    }
+    return
   }
 
-  // Handle PR merges (look for PR number in commit message)
+  // Handle PR merges to other branches (like dev)
   if (prMatch) {
     const prNumber = prMatch[1]
     const prUrl = `${repositoryName}/pull/${prNumber}`
     console.log(`Updating issues mentioning PR ${prUrl} to status: ${newStatus}`)
     await jiraUtil.updateByPR(prUrl, newStatus, preparedFields)
+  }
+
+  // Additionally, for important branches, check commit history for issue keys
+  if (shouldCheckCommitHistory) {
+    try {
+      // Get issue keys from recent commit history (last 50 commits)
+      const commitHistoryIssues = await jiraUtil.getIssueKeysFromCommitHistory('HEAD~50', 'HEAD')
+
+      if (commitHistoryIssues.length > 0) {
+        console.log(`Found ${commitHistoryIssues.length} additional issues in commit history for ${branch} branch`)
+
+        // Update issues found in commit history
+        const updateResults = await jiraUtil.updateIssuesFromCommitHistory(
+          commitHistoryIssues,
+          newStatus,
+          ['Blocked', 'Rejected'],
+          preparedFields
+        )
+
+        console.log(`Commit history update results: ${updateResults.successful} successful, ${updateResults.failed} failed`)
+      }
+    } catch (error) {
+      console.error('Error processing commit history:', error.message)
+      // Don't fail the entire action if commit history processing fails
+    }
   }
 }
 
@@ -262,4 +339,14 @@ function extractJiraIssueKeys(pullRequest) {
   }
 
   return Array.from(keys)
+}
+
+/**
+ * Extract PR number from commit message
+ * @param {string} commitMessage - Git commit message
+ * @returns {string|null} PR number or null if not found
+ */
+function extractPrNumber(commitMessage) {
+  const prMatch = commitMessage.match(/#([0-9]+)/)
+  return prMatch ? prMatch[1] : null
 }
