@@ -553,43 +553,83 @@ class Jira {
   }
 
   /**
-   * Extract Jira issue keys from git commit history
-   * @param {string} fromRef - Starting git reference (e.g., 'HEAD~10', commit hash)
-   * @param {string} toRef - Ending git reference (e.g., 'HEAD', commit hash)
-   * @param {string} cwd - Working directory for git commands (optional)
-   * @returns {Promise<Array<string>>} Array of unique Jira issue keys found in commit messages
+   * Extract Jira issue keys from commit messages
+   * @param {Array<string>|string} commitMessages - Array of commit messages or single commit message string
+   * @returns {Array<string>} Array of unique Jira issue keys found in commit messages
    */
-  async getIssueKeysFromCommitHistory(fromRef = 'HEAD~50', toRef = 'HEAD', cwd = process.cwd()) {
+  extractIssueKeysFromCommitMessages(commitMessages) {
     try {
-      const { execSync } = require('child_process')
-
-      // Get commit messages from git log
-      const gitCommand = `git log ${fromRef}..${toRef} --pretty=format:"%s %b" --no-merges`
-      const commitMessages = execSync(gitCommand, {
-        cwd,
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'ignore'] // Suppress stderr to avoid noise
-      })
-
-      console.log(commitMessages)
+      // Handle both array and string inputs
+      const messages = Array.isArray(commitMessages) ? commitMessages.join(' ') : commitMessages
 
       // Extract Jira issue keys using regex pattern
       const jiraKeyPattern = /[A-Z]+-[0-9]+/g
       const issueKeys = new Set()
 
-      if (commitMessages) {
-        const matches = commitMessages.match(jiraKeyPattern)
+      if (messages) {
+        const matches = messages.match(jiraKeyPattern)
         if (matches) {
           matches.forEach(key => issueKeys.add(key))
         }
       }
 
       const uniqueKeys = Array.from(issueKeys)
-      console.log(`Found ${uniqueKeys.length} unique Jira issue keys in commit history (${fromRef}..${toRef}):`, uniqueKeys)
+      console.log(`Found ${uniqueKeys.length} unique Jira issue keys in commit messages:`, uniqueKeys)
 
       return uniqueKeys
     } catch (error) {
-      console.error('Error reading git commit history:', error.message)
+      console.error('Error extracting Jira issue keys from commit messages:', error.message)
+      return []
+    }
+  }
+
+  /**
+   * Extract Jira issue keys from GitHub context (for GitHub Actions)
+   * @param {Object} context - GitHub Actions context object
+   * @returns {Array<string>} Array of unique Jira issue keys found in PR/push context
+   */
+  extractIssueKeysFromGitHubContext(context) {
+    try {
+      const issueKeys = new Set()
+      const jiraKeyPattern = /[A-Z]+-[0-9]+/g
+
+      // Extract from PR title and body
+      // if (context.payload.pull_request) {
+      //   const pr = context.payload.pull_request
+      //   const prTitle = pr.title || ''
+      //   const prBody = pr.body || ''
+      //
+      //   const prMatches = (prTitle + ' ' + prBody).match(jiraKeyPattern)
+      //   if (prMatches) {
+      //     prMatches.forEach(key => issueKeys.add(key))
+      //   }
+      // }
+
+      // Extract from commit messages in the payload
+      if (context.payload.commits) {
+        context.payload.commits.forEach(commit => {
+          const commitMessage = commit.message || ''
+          const commitMatches = commitMessage.match(jiraKeyPattern)
+          if (commitMatches) {
+            commitMatches.forEach(key => issueKeys.add(key))
+          }
+        })
+      }
+
+      // Extract from head commit message
+      if (context.payload.head_commit && context.payload.head_commit.message) {
+        const headCommitMatches = context.payload.head_commit.message.match(jiraKeyPattern)
+        if (headCommitMatches) {
+          headCommitMatches.forEach(key => issueKeys.add(key))
+        }
+      }
+
+      const uniqueKeys = Array.from(issueKeys)
+      console.log(`Found ${uniqueKeys.length} unique Jira issue keys in GitHub context:`, uniqueKeys)
+
+      return uniqueKeys
+    } catch (error) {
+      console.error('Error extracting Jira issue keys from GitHub context:', error.message)
       return []
     }
   }

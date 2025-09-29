@@ -1,4 +1,5 @@
 const core = require('@actions/core')
+const github = require('@actions/github')
 const { Octokit } = require('@octokit/rest')
 const Jira = require('./../utils/jira')
 
@@ -257,7 +258,10 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
 
     try {
       // Get issue keys from commit history
-      const commitHistoryIssues = await jiraUtil.getIssueKeysFromCommitHistory('HEAD~100', 'HEAD')
+      const commitHistoryIssues = await jiraUtil.extractIssueKeysFromGithubContext(github.context)
+      console.log(commitHistoryIssues)
+
+      return
 
       if (commitHistoryIssues.length > 0) {
         console.log(`Found ${commitHistoryIssues.length} issues in staging commit history`)
