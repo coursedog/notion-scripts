@@ -571,6 +571,8 @@ class Jira {
         stdio: ['pipe', 'pipe', 'ignore'] // Suppress stderr to avoid noise
       })
 
+      console.log(commitMessages)
+
       // Extract Jira issue keys using regex pattern
       const jiraKeyPattern = /[A-Z]+-[0-9]+/g
       const issueKeys = new Set()
