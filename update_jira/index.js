@@ -12,7 +12,7 @@ const statusMap = {
     customFields: {
       // prod release timestamp
       customfield_11475: new Date(),
-      customfield_11473: 'Production'
+      customfield_11473: { name: 'Production' }
     }
   },
   'main': {
@@ -23,7 +23,7 @@ const statusMap = {
     customFields: {
       // prod release timestamp
       customfield_11475: new Date(),
-      customfield_11473: 'Production'
+      customfield_11473: { name: 'Production' }
     }
   },
   'staging': {
@@ -34,7 +34,7 @@ const statusMap = {
     customFields: {
       // staging release timestamp
       customfield_11474: new Date(),
-      customfield_11473: 'Staging'
+      customfield_11473: { name: 'Staging' }
     }
   },
   'dev': {
