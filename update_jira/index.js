@@ -259,10 +259,6 @@ async function handlePushEvent(branch, jiraUtil, githubRepository, githubToken) 
     try {
       // Get issue keys from commit history
       const commitHistoryIssues = await jiraUtil.extractIssueKeysFromGitHubContext(github.context)
-      console.log(commitHistoryIssues)
-
-      return
-
       if (commitHistoryIssues.length > 0) {
         console.log(`Found ${commitHistoryIssues.length} issues in staging commit history`)
 
