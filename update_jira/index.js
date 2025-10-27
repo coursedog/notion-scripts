@@ -41,7 +41,7 @@ const statusMap = {
     }
   },
   'dev': {
-    status: 'Deployed to Dev',
+    status: 'Merged',
     transitionFields: {
       resolution: 'Done'
     },
