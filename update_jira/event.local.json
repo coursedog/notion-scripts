@@ -1,0 +1,35 @@
+{
+  "action": "closed",
+  "pull_request": {
+    "number": 123,
+    "title": "DEX-36: Fix GitHub JIRA integration",
+    "body": "This PR fixes the integration between GitHub and JIRA.\n\nRelated issues:\n- DEX-36\n- ALL-593",
+    "state": "closed",
+    "merged": true,
+    "draft": false,
+    "base": {
+      "ref": "staging",
+      "repo": {
+        "name": "notion-scripts",
+        "full_name": "coursedog/notion-scripts"
+      }
+    },
+    "head": {
+      "ref": "DEX-36/fix-github-jira-integrations",
+      "sha": "abc123def456"
+    },
+    "user": {
+      "login": "developer"
+    }
+  },
+  "repository": {
+    "name": "notion-scripts",
+    "full_name": "coursedog/notion-scripts",
+    "owner": {
+      "login": "coursedog"
+    }
+  },
+  "sender": {
+    "login": "developer"
+  }
+}

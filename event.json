@@ -1,0 +1,38 @@
+{
+  "action": "closed",
+  "number": 42,
+  "pull_request": {
+    "url": "https://api.github.com/repos/coursedog/notion-scripts/pulls/42",
+    "id": 987654,
+    "number": 42,
+    "state": "closed",
+    "locked": false,
+    "title": "[DEX-36] Add deployment metadata sync to Jira",
+    "user": {
+      "login": "kamio90",
+      "id": 12345
+    },
+    "body": "Implements DEX-36: Pushes deployment metadata to Jira on deploy.",
+    "merged": true,
+    "merge_commit_sha": "abcdef1234567890",
+    "base": {
+      "ref": "main"
+    },
+    "head": {
+      "ref": "feature/DEX-36-jira-deploy-metadata"
+    }
+  },
+  "repository": {
+    "id": 123456,
+    "name": "notion-scripts",
+    "full_name": "coursedog/notion-scripts",
+    "owner": {
+      "login": "coursedog",
+      "id": 1
+    }
+  },
+  "sender": {
+    "login": "kamio90",
+    "id": 12345
+  }
+}
