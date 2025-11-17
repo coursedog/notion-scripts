@@ -10,6 +10,8 @@ module.exports = {
   },
   globals: {
     process: 'readonly',
+    Buffer: 'readonly',
+    structuredClone: 'readonly',
   },
   rules: {
     'no-extend-native': [ 'error', { exceptions: [ 'Array' ] } ],

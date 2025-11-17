@@ -734,7 +734,7 @@ class Jira {
    * @throws {Error} If git command fails unexpectedly (not due to empty range or missing refs)
    */
   async getIssueKeysFromCommitHistory (fromRef, toRef) {
-    const { execSync } = require('child_process')
+    const { execSync } = require('node:child_process')
 
     // Validate input parameters
     if (
