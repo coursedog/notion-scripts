@@ -115,7 +115,7 @@ const statusMap = {
   staging: {
     status: 'Deployed to Staging',
     transitionFields: {
-      resolution: 'Done',
+      // No resolution field - "Deployed to Staging" is not a final state
     },
     customFields: {
       customfield_11474: new Date(),
@@ -125,7 +125,7 @@ const statusMap = {
   dev: {
     status: 'Merged',
     transitionFields: {
-      resolution: 'Done',
+      // No resolution field - "Merged" is not a final state
     },
     customFields: {},
   },
