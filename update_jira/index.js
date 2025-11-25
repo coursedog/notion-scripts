@@ -1,3 +1,12 @@
+/**
+ * @fileoverview GitHub Actions - Jira Integration
+ * @module update_jira
+ * @version 2.0.0
+ *
+ * Automates Jira issue management based on GitHub events (PR actions, branch deployments).
+ * Supports status transitions, custom field updates, and deployment tracking.
+ */
+
 require('dotenv').config()
 const core = require('@actions/core')
 const github = require('@actions/github')
@@ -5,25 +14,364 @@ const { Octokit } = require('@octokit/rest')
 const Jira = require('./../utils/jira')
 const fs = require('node:fs')
 
+// ============================================================================
+// CONSTANTS & CONFIGURATION
+// ============================================================================
+
 /**
- * Mask sensitive data in logs.
- * @param {object} obj - Any object to mask
- * @returns {object}
+ * GitHub Actions and workflow constants
+ * @const {Object}
  */
-function maskSensitive (obj) {
-  if (!obj || typeof obj !== 'object') return obj
-  const clone = structuredClone(obj)
-  if (clone.apiToken) clone.apiToken = '***'
-  if (clone.email) clone.email = '***'
-  if (clone.headers?.Authorization) clone.headers.Authorization = '***'
-  if (clone.JIRA_API_TOKEN) clone.JIRA_API_TOKEN = '***'
-  if (clone.JIRA_EMAIL) clone.JIRA_EMAIL = '***'
-  return clone
+const ACTION_CONSTANTS = {
+  GITHUB_ACTIONS: {
+    PULL_REQUEST: 'pull_request',
+    PULL_REQUEST_TARGET: 'pull_request_target',
+    PUSH: 'push',
+  },
+
+  PR_ACTIONS: {
+    OPENED: 'opened',
+    REOPENED: 'reopened',
+    READY_FOR_REVIEW: 'ready_for_review',
+    CONVERTED_TO_DRAFT: 'converted_to_draft',
+    SYNCHRONIZE: 'synchronize',
+    CLOSED: 'closed',
+  },
+
+  BRANCHES: {
+    ALLOWED_REFS: [
+      'refs/heads/master',
+      'refs/heads/main',
+      'refs/heads/staging',
+      'refs/heads/dev',
+    ],
+    PRODUCTION: [ 'master', 'main' ],
+    STAGING: 'staging',
+    DEVELOPMENT: 'dev',
+  },
+
+  JIRA_STATUSES: {
+    CODE_REVIEW: 'Code Review',
+    IN_DEVELOPMENT: 'In Development',
+    DONE: 'Done',
+    DEPLOYED_TO_STAGING: 'Deployed to Staging',
+    MERGED: 'Merged',
+  },
+
+  EXCLUDED_STATES: [ 'Blocked', 'Rejected' ],
+
+  CUSTOM_FIELDS: {
+    RELEASE_ENVIRONMENT: 'customfield_11473',
+    STAGING_TIMESTAMP: 'customfield_11474',
+    PRODUCTION_TIMESTAMP: 'customfield_11475',
+  },
+
+  RELEASE_ENV_IDS: {
+    STAGING: '11942',
+    PRODUCTION: '11943',
+  },
+
+  COMMIT_HISTORY: {
+    PRODUCTION_RANGE: 'HEAD~100',
+    STAGING_RANGE: 'HEAD~50',
+    HEAD: 'HEAD',
+  },
+
+  VALIDATION: {
+    ISSUE_KEY_PATTERN: /^[A-Z][A-Z0-9]+-\d+$/,
+    ISSUE_KEY_EXTRACT_PATTERN: /[A-Z]+-[0-9]+/g,
+    PR_NUMBER_PATTERN: /#([0-9]+)/,
+  },
+
+  RETRY: {
+    MAX_ATTEMPTS: 3,
+    BACKOFF_MULTIPLIER: 2,
+    BASE_DELAY_MS: 1000,
+  },
+
+  GITHUB_API: {
+    MAX_RESULTS: 50,
+  },
 }
 
 /**
- * Detect environment: 'ci', 'github', or 'local'.
- * @returns {'ci'|'github'|'local'}
+ * Status mapping configuration for different branch deployments.
+ * Maps branch names to their corresponding Jira status and custom field updates.
+ *
+ * @type {Object.<string, BranchConfig>}
+ */
+const STATUS_MAP = {
+  master: {
+    status: ACTION_CONSTANTS.JIRA_STATUSES.DONE,
+    transitionFields: {
+      resolution: 'Done',
+    },
+    customFields: {
+      [ACTION_CONSTANTS.CUSTOM_FIELDS.PRODUCTION_TIMESTAMP]: () => new Date(),
+      [ACTION_CONSTANTS.CUSTOM_FIELDS.RELEASE_ENVIRONMENT]: { id: ACTION_CONSTANTS.RELEASE_ENV_IDS.PRODUCTION },
+    },
+  },
+  main: {
+    status: ACTION_CONSTANTS.JIRA_STATUSES.DONE,
+    transitionFields: {
+      resolution: 'Done',
+    },
+    customFields: {
+      [ACTION_CONSTANTS.CUSTOM_FIELDS.PRODUCTION_TIMESTAMP]: () => new Date(),
+      [ACTION_CONSTANTS.CUSTOM_FIELDS.RELEASE_ENVIRONMENT]: { id: ACTION_CONSTANTS.RELEASE_ENV_IDS.PRODUCTION },
+    },
+  },
+  staging: {
+    status: ACTION_CONSTANTS.JIRA_STATUSES.DEPLOYED_TO_STAGING,
+    transitionFields: {
+      resolution: 'Done',
+    },
+    customFields: {
+      [ACTION_CONSTANTS.CUSTOM_FIELDS.STAGING_TIMESTAMP]: () => new Date(),
+      [ACTION_CONSTANTS.CUSTOM_FIELDS.RELEASE_ENVIRONMENT]: { id: ACTION_CONSTANTS.RELEASE_ENV_IDS.STAGING },
+    },
+  },
+  dev: {
+    status: ACTION_CONSTANTS.JIRA_STATUSES.MERGED,
+    transitionFields: {},
+    customFields: {},
+  },
+}
+
+// ============================================================================
+// CUSTOM ERROR CLASSES
+// ============================================================================
+
+/**
+ * Base error class for GitHub Action errors
+ * @extends Error
+ */
+class GitHubActionError extends Error {
+  /**
+   * @param {string} message - Error message
+   * @param {Object} [context={}] - Additional error context
+   */
+  constructor (message, context = {}) {
+    super(message)
+    this.name = this.constructor.name
+    this.context = context
+    this.timestamp = new Date().toISOString()
+    Error.captureStackTrace(this, this.constructor)
+  }
+}
+
+/**
+ * Thrown when event processing fails
+ * @extends GitHubActionError
+ */
+class EventProcessingError extends GitHubActionError {
+  /**
+   * @param {string} message - Error message
+   * @param {string} eventType - GitHub event type
+   * @param {Object} eventData - Event data object
+   */
+  constructor (message, eventType, eventData) {
+    super(message, { eventType, eventData })
+    this.eventType = eventType
+  }
+}
+
+/**
+ * Thrown when configuration is missing or invalid
+ * @extends GitHubActionError
+ */
+class ConfigurationError extends GitHubActionError {
+  /**
+   * @param {string} message - Error message
+   * @param {string[]} missingConfig - List of missing configuration keys
+   */
+  constructor (message, missingConfig) {
+    super(message, { missingConfig })
+    this.missingConfig = missingConfig
+  }
+}
+
+/**
+ * Thrown when GitHub API operations fail
+ * @extends GitHubActionError
+ */
+class GitHubApiError extends GitHubActionError {
+  /**
+   * @param {string} message - Error message
+   * @param {number} statusCode - HTTP status code
+   * @param {string} operation - Operation that failed
+   */
+  constructor (message, statusCode, operation) {
+    super(message, { statusCode, operation })
+    this.statusCode = statusCode
+    this.operation = operation
+  }
+}
+
+// ============================================================================
+// LOGGING SYSTEM
+// ============================================================================
+
+/**
+ * Logger with context support and multiple log levels.
+ * Provides structured logging with sensitive data masking.
+ * @class Logger
+ */
+class Logger {
+  /**
+   * @param {string} [context='GitHubAction'] - Logger context/namespace
+   * @param {string} [level='INFO'] - Minimum log level to output
+   */
+  constructor (context = 'GitHubAction', level = 'INFO') {
+    this.context = context
+    this.level = level
+    this.levelPriority = {
+      DEBUG: 0,
+      INFO: 1,
+      WARN: 2,
+      ERROR: 3,
+    }
+    this.operationCounter = 0
+  }
+
+  /**
+   * Check if a log level should be output
+   * @private
+   * @param {string} level - Log level to check
+   * @returns {boolean} True if should log
+   */
+  _shouldLog (level) {
+    return this.levelPriority[level] >= this.levelPriority[this.level]
+  }
+
+  /**
+   * Mask sensitive data in log output
+   * @private
+   * @param {Object} data - Data to mask
+   * @returns {Object} Masked data
+   */
+  _maskSensitiveData (data) {
+    if (!data || typeof data !== 'object') return data
+    const clone = structuredClone(data)
+
+    const sensitiveKeys = [
+      'apiToken', 'token', 'password', 'secret', 'authorization',
+      'JIRA_API_TOKEN', 'GITHUB_TOKEN', 'email',
+    ]
+
+    const maskObject = (obj) => {
+      if (!obj || typeof obj !== 'object') return obj
+
+      for (const key of Object.keys(obj)) {
+        const lowerKey = key.toLowerCase()
+        if (sensitiveKeys.some(sk => lowerKey.includes(sk.toLowerCase()))) {
+          obj[key] = '***'
+        } else if (key === 'headers' && obj[key]?.Authorization) {
+          obj[key].Authorization = '***'
+        } else if (typeof obj[key] === 'object') {
+          maskObject(obj[key])
+        }
+      }
+      return obj
+    }
+
+    return maskObject(clone)
+  }
+
+  /**
+   * Core logging method
+   * @private
+   * @param {string} level - Log level
+   * @param {string} message - Log message
+   * @param {Object} [data={}] - Additional data to log
+   */
+  _log (level, message, data = {}) {
+    if (!this._shouldLog(level)) return
+
+    const output = `[${level}] [${this.context}] ${message}${Object.keys(data).length > 0 ? ` ${JSON.stringify(this._maskSensitiveData(data))}` : ''}`
+
+    switch (level) {
+      case 'ERROR':
+        console.error(output)
+        break
+      case 'WARN':
+        console.warn(output)
+        break
+      default:
+        console.log(output)
+    }
+  }
+
+  /**
+   * Log debug message
+   * @param {string} message - Log message
+   * @param {Object} [data={}] - Additional data
+   */
+  debug (message, data = {}) {
+    this._log('DEBUG', message, data)
+  }
+
+  /**
+   * Log info message
+   * @param {string} message - Log message
+   * @param {Object} [data={}] - Additional data
+   */
+  info (message, data = {}) {
+    this._log('INFO', message, data)
+  }
+
+  /**
+   * Log warning message
+   * @param {string} message - Log message
+   * @param {Object} [data={}] - Additional data
+   */
+  warn (message, data = {}) {
+    this._log('WARN', message, data)
+  }
+
+  /**
+   * Log error message
+   * @param {string} message - Log message
+   * @param {Object} [data={}] - Additional data
+   */
+  error (message, data = {}) {
+    this._log('ERROR', message, data)
+  }
+
+  /**
+   * Start tracking an operation with automatic timing
+   * @param {string} operation - Operation name
+   * @param {Object} [params={}] - Operation parameters
+   * @returns {Function} Finish function to call when operation completes
+   */
+  startOperation (operation, params = {}) {
+    const operationId = `${operation}_${++this.operationCounter}_${Date.now()}`
+    const startTime = Date.now()
+
+    this.debug(`Operation started: ${operation}`, { operationId, ...params })
+
+    return (status = 'success', result = {}) => {
+      const duration = Date.now() - startTime
+      this.info(`Operation completed: ${operation}`, {
+        operationId,
+        status,
+        durationMs: duration,
+        ...result,
+      })
+    }
+  }
+}
+
+// Create global logger instance
+const logger = new Logger('GitHubAction', process.env.DEBUG === 'true' ? 'DEBUG' : 'INFO')
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+/**
+ * Detect runtime environment
+ * @returns {'github'|'ci'|'local'} Environment type
  */
 function detectEnvironment () {
   if (process.env.GITHUB_ACTIONS === 'true') return 'github'
@@ -32,253 +380,383 @@ function detectEnvironment () {
 }
 
 const ENVIRONMENT = detectEnvironment()
+
 /**
- * Log environment and startup info (professional, clear, masked).
+ * Sleep for specified milliseconds
+ * @param {number} ms - Milliseconds to sleep
+ * @returns {Promise<void>}
  */
-function logEnvSection () {
-  console.log('\n====================')
-  console.log('Coursedog: update_jira script startup')
-  console.log('Environment:', ENVIRONMENT)
-  console.log('GITHUB_REF:', process.env.GITHUB_REF)
-  console.log('GITHUB_EVENT_NAME:', process.env.GITHUB_EVENT_NAME)
-  console.log('GITHUB_EVENT_PATH:', process.env.GITHUB_EVENT_PATH)
-  console.log('GITHUB_REPOSITORY:', process.env.GITHUB_REPOSITORY)
-  console.log('JIRA_BASE_URL:', process.env.JIRA_BASE_URL)
-  console.log('JIRA_EMAIL:', process.env.JIRA_EMAIL ? '***' : undefined)
-  console.log('JIRA_PROJECT_KEY:', process.env.JIRA_PROJECT_KEY)
-  console.log('====================\n')
+function sleep (ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 /**
- * Professional debug logger with masking and clear formatting.
- * @param {string} message
- * @param  {...any} args
+ * Construct GitHub PR URL from components
+ * @param {string} owner - Repository owner
+ * @param {string} repo - Repository name
+ * @param {number|string} prNumber - PR number
+ * @returns {string} Full PR URL
  */
-function debugLog (message, ...args) {
-  const safeArgs = args.map(maskSensitive)
-  console.log(`[DEBUG] ${message}`, ...safeArgs)
+function constructPrUrl (owner, repo, prNumber) {
+  return `${owner}/${repo}/pull/${prNumber}`
 }
 
-logEnvSection()
-
 /**
- * Custom Field Configuration for Deployment Tracking
- *
- * These custom field IDs are defined in Jira and used to track deployment metadata.
- * Reference: Ticket ALL-593
- *
- * Custom Fields:
- * - customfield_11473: Release Environment (select field)
- *   Options: staging (ID: 11942), production (ID: 11943)
- * - customfield_11474: Stage Release Timestamp (datetime)
- * - customfield_11475: Production Release Timestamp (datetime)
- *
- * To verify these IDs match your Jira instance:
- *   node utils/verify-custom-fields.js
- *
- * To test updating these fields:
- *   node utils/test-custom-field-update.js [ISSUE_KEY]
+ * Extract owner and repo name from GitHub repository string
+ * @param {string} repository - Repository in format "owner/repo"
+ * @returns {{owner: string, repo: string}} Owner and repo
+ * @throws {ConfigurationError} If repository format is invalid
  */
-const stagingReleaseEnvId = '11942' // Option ID for "staging" in customfield_11473
-const prodReleaseEnvId = '11943' // Option ID for "production" in customfield_11473
-
-/**
- * Status mapping configuration for different branch deployments.
- * Maps branch names to their corresponding Jira status and custom field updates.
- *
- * When code is merged/pushed to these branches:
- * - master/main: Production deployment → sets Production Release Timestamp
- * - staging: Staging deployment → sets Stage Release Timestamp
- * - dev: Development merge → no deployment timestamps set
- */
-const statusMap = {
-  master: {
-    status: 'Done',
-    transitionFields: {
-      resolution: 'Done',
-    },
-    customFields: {
-      customfield_11475: new Date(),
-      customfield_11473: { id: prodReleaseEnvId },
-    },
-  },
-  main: {
-    status: 'Done',
-    transitionFields: {
-      resolution: 'Done',
-    },
-    customFields: {
-      customfield_11475: new Date(),
-      customfield_11473: { id: prodReleaseEnvId },
-    },
-  },
-  staging: {
-    status: 'Deployed to Staging',
-    transitionFields: {
-      // No resolution field - "Deployed to Staging" is not a final state
-    },
-    customFields: {
-      customfield_11474: new Date(),
-      customfield_11473: { id: stagingReleaseEnvId },
-    },
-  },
-  dev: {
-    status: 'Merged',
-    transitionFields: {
-      // No resolution field - "Merged" is not a final state
-    },
-    customFields: {},
-  },
-}
-
-run()
-
-async function run () {
-  try {
-    debugLog(
-      'run() started. Checking event type and initializing Jira connection.'
+function parseRepository (repository) {
+  if (!repository || !repository.includes('/')) {
+    throw new ConfigurationError(
+      `Invalid repository format: ${repository}. Expected "owner/repo"`,
+      [ 'GITHUB_REPOSITORY' ]
     )
-    debugLog(
-      'Rollback/dry-run mode:',
-      process.env.DRY_RUN === 'true' ? 'ENABLED' : 'DISABLED'
-    )
-    const {
-      GITHUB_REF,
-      GITHUB_EVENT_NAME,
-      GITHUB_EVENT_PATH,
-      GITHUB_REPOSITORY,
-      GITHUB_TOKEN,
-    } = process.env
-
-    const JIRA_BASE_URL =
-      core.getInput('JIRA_BASE_URL') || process.env.JIRA_BASE_URL
-    const JIRA_EMAIL = core.getInput('JIRA_EMAIL') || process.env.JIRA_EMAIL
-    const JIRA_API_TOKEN =
-      core.getInput('JIRA_API_TOKEN') || process.env.JIRA_API_TOKEN
-
-    debugLog('Attempting to initialize Jira utility with:', {
-      JIRA_BASE_URL,
-      JIRA_EMAIL,
-      JIRA_API_TOKEN: JIRA_API_TOKEN ? '***' : undefined,
-    })
-    const jiraUtil = new Jira({
-      baseUrl: JIRA_BASE_URL,
-      email: JIRA_EMAIL,
-      apiToken: JIRA_API_TOKEN,
-    })
-    debugLog('Jira utility initialized.')
-
-    // --- EVENT PAYLOAD HANDLING ---
-    let eventData = null
-    if (ENVIRONMENT === 'local') {
-      // Allow local override of event payload for testing
-      const localEventPath = './update_jira/event.local.json'
-      if (fs.existsSync(localEventPath)) {
-        debugLog('Detected local event payload override:', localEventPath)
-        eventData = JSON.parse(fs.readFileSync(localEventPath, 'utf8'))
-      } else if (GITHUB_EVENT_PATH && fs.existsSync(GITHUB_EVENT_PATH)) {
-        debugLog(
-          'Loading event payload from GITHUB_EVENT_PATH:',
-          GITHUB_EVENT_PATH
-        )
-        eventData = JSON.parse(fs.readFileSync(GITHUB_EVENT_PATH, 'utf8'))
-      } else {
-        debugLog('No event payload found for local run.')
-      }
-    } else if (GITHUB_EVENT_PATH && fs.existsSync(GITHUB_EVENT_PATH)) {
-      debugLog(
-        'Loading event payload from GITHUB_EVENT_PATH:',
-        GITHUB_EVENT_PATH
-      )
-      eventData = JSON.parse(fs.readFileSync(GITHUB_EVENT_PATH, 'utf8'))
-    }
-
-    if (
-      (GITHUB_EVENT_NAME === 'pull_request' ||
-        GITHUB_EVENT_NAME === 'pull_request_target') &&
-      eventData
-    ) {
-      debugLog(
-        'Detected pull request event. Loaded event data:',
-        maskSensitive(eventData)
-      )
-      if (process.env.DRY_RUN === 'true') {
-        debugLog(
-          'DRY RUN: Would handle pull request event, skipping actual Jira update.'
-        )
-        return
-      }
-      await handlePullRequestEvent(eventData, jiraUtil, GITHUB_REPOSITORY)
-      return
-    }
-
-    const allowedBranches = [
-      'refs/heads/master',
-      'refs/heads/main',
-      'refs/heads/staging',
-      'refs/heads/dev',
-    ]
-
-    if (allowedBranches.includes(GITHUB_REF)) {
-      const branchName = GITHUB_REF.split('/').pop()
-      debugLog('Detected push event for branch:', branchName)
-      if (process.env.DRY_RUN === 'true') {
-        debugLog(
-          'DRY RUN: Would handle push event, skipping actual Jira update.'
-        )
-        return
-      }
-      await handlePushEvent(
-        branchName,
-        jiraUtil,
-        GITHUB_REPOSITORY,
-        GITHUB_TOKEN
-      )
-    }
-  } catch (error) {
-    debugLog('Error in run():', error)
-    core.setFailed(error.message)
   }
+
+  const [ owner, repo ] = repository.split('/')
+  return { owner, repo }
+}
+
+// ============================================================================
+// VALIDATION FUNCTIONS
+// ============================================================================
+
+/**
+ * Validates required environment variables and configuration.
+ * @returns {Object} Validated configuration object
+ * @throws {ConfigurationError} If required configuration is missing or invalid
+ */
+function loadAndValidateConfiguration () {
+  const finishOp = logger.startOperation('loadConfiguration')
+
+  const config = {
+    jira: {
+      baseUrl: core.getInput('JIRA_BASE_URL') || process.env.JIRA_BASE_URL,
+      email: core.getInput('JIRA_EMAIL') || process.env.JIRA_EMAIL,
+      apiToken: core.getInput('JIRA_API_TOKEN') || process.env.JIRA_API_TOKEN,
+      logLevel: process.env.DEBUG === 'true' ? 'DEBUG' : 'INFO',
+    },
+    github: {
+      ref: process.env.GITHUB_REF,
+      eventName: process.env.GITHUB_EVENT_NAME,
+      eventPath: process.env.GITHUB_EVENT_PATH,
+      repository: process.env.GITHUB_REPOSITORY,
+      token: process.env.GITHUB_TOKEN,
+    },
+    environment: ENVIRONMENT,
+    dryRun: process.env.DRY_RUN === 'true',
+  }
+
+  // Validate required Jira config
+  const requiredJira = [ 'baseUrl', 'email', 'apiToken' ]
+  const missingJira = requiredJira.filter(key => !config.jira[key])
+
+  if (missingJira.length > 0) {
+    const missingEnvVars = missingJira.map(k => `JIRA_${k.toUpperCase()}`)
+    const error = new ConfigurationError(
+      `Missing required Jira configuration: ${missingJira.join(', ')}`,
+      missingEnvVars
+    )
+    finishOp('error', { error: error.message })
+    throw error
+  }
+
+  // Validate STATUS_MAP
+  validateStatusMap()
+
+  finishOp('success', {
+    environment: config.environment,
+    dryRun: config.dryRun,
+  })
+
+  logger.info('Configuration loaded successfully', {
+    jiraBaseUrl: config.jira.baseUrl,
+    environment: config.environment,
+    dryRun: config.dryRun,
+  })
+
+  return config
 }
 
 /**
- * Prepare fields for Jira transition, converting names to IDs where needed
+ * Validates STATUS_MAP configuration
+ * @throws {ConfigurationError} If status map is invalid
+ */
+function validateStatusMap () {
+  const requiredBranches = [ 'master', 'main', 'staging', 'dev' ]
+
+  for (const branch of requiredBranches) {
+    if (!STATUS_MAP[branch]) {
+      throw new ConfigurationError(
+        `Missing status configuration for branch: ${branch}`,
+        [ `STATUS_MAP.${branch}` ]
+      )
+    }
+
+    const config = STATUS_MAP[branch]
+    if (!config.status) {
+      throw new ConfigurationError(
+        `Missing status field for branch: ${branch}`,
+        [ `STATUS_MAP.${branch}.status` ]
+      )
+    }
+  }
+
+  logger.debug('STATUS_MAP validation passed', {
+    branches: Object.keys(STATUS_MAP),
+  })
+}
+
+/**
+ * Validates event data structure before processing
+ * @param {Object} eventData - Event payload
+ * @param {string} eventType - Event type
+ * @throws {EventProcessingError} If event data is invalid
+ */
+function validateEventData (eventData, eventType) {
+  if (!eventData) {
+    throw new EventProcessingError(
+      'Event data is null or undefined',
+      eventType,
+      null
+    )
+  }
+
+  if (eventType === ACTION_CONSTANTS.GITHUB_ACTIONS.PULL_REQUEST ||
+      eventType === ACTION_CONSTANTS.GITHUB_ACTIONS.PULL_REQUEST_TARGET) {
+    if (!eventData.pull_request) {
+      throw new EventProcessingError(
+        'Missing pull_request in event data',
+        eventType,
+        eventData
+      )
+    }
+    if (!eventData.action) {
+      throw new EventProcessingError(
+        'Missing action in event data',
+        eventType,
+        eventData
+      )
+    }
+  }
+
+  logger.debug('Event data validation passed', { eventType })
+  return true
+}
+
+/**
+ * Validate issue key format
+ * @param {string} issueKey - Issue key to validate
+ * @returns {boolean} True if valid
+ */
+function isValidIssueKey (issueKey) {
+  return ACTION_CONSTANTS.VALIDATION.ISSUE_KEY_PATTERN.test(issueKey)
+}
+
+// ============================================================================
+// ISSUE KEY EXTRACTION & DEDUPLICATION
+// ============================================================================
+
+/**
+ * Extracts and validates Jira issue keys from PR title and body.
+ * @param {Object} pullRequest - GitHub PR object
+ * @param {string} pullRequest.title - PR title
+ * @param {string} [pullRequest.body] - PR body/description
+ * @param {number} [pullRequest.number] - PR number
+ * @returns {string[]} Array of validated, deduplicated Jira issue keys
+ */
+function extractJiraIssueKeys (pullRequest) {
+  const finishOp = logger.startOperation('extractJiraIssueKeys', {
+    prNumber: pullRequest.number,
+  })
+
+  const keys = new Set()
+  const sources = [
+    { type: 'title', content: pullRequest.title },
+    { type: 'body', content: pullRequest.body },
+  ].filter(s => s.content)
+
+  for (const source of sources) {
+    const matches = source.content.match(ACTION_CONSTANTS.VALIDATION.ISSUE_KEY_EXTRACT_PATTERN)
+    if (matches) {
+      for (const key of matches) {
+        if (isValidIssueKey(key)) {
+          keys.add(key)
+        } else {
+          logger.debug('Invalid issue key format filtered', {
+            key,
+            source: source.type,
+          })
+        }
+      }
+    }
+  }
+
+  const result = Array.from(keys)
+  finishOp('success', { issueKeysFound: result.length })
+
+  logger.info('Extracted issue keys from PR', {
+    prNumber: pullRequest.number,
+    issueKeys: result,
+    sourcesChecked: sources.map(s => s.type),
+  })
+
+  return result
+}
+
+/**
+ * Deduplicate and validate issue keys from multiple sources
+ * @param {string[][]} issueKeysArrays - Arrays of issue keys from different sources
+ * @returns {string[]} Deduplicated array of valid issue keys
+ */
+function deduplicateIssueKeys (...issueKeysArrays) {
+  const uniqueKeys = new Set()
+  const invalid = []
+
+  for (const keys of issueKeysArrays) {
+    if (!Array.isArray(keys)) continue
+
+    for (const key of keys) {
+      if (isValidIssueKey(key)) {
+        uniqueKeys.add(key)
+      } else {
+        invalid.push(key)
+      }
+    }
+  }
+
+  if (invalid.length > 0) {
+    logger.warn('Invalid issue keys filtered out during deduplication', {
+      invalid,
+      count: invalid.length,
+    })
+  }
+
+  const result = Array.from(uniqueKeys)
+  logger.debug('Issue keys deduplicated', {
+    totalUnique: result.length,
+    invalidFiltered: invalid.length,
+  })
+
+  return result
+}
+
+/**
+ * Extract PR number from commit message
+ * @param {string} commitMessage - Git commit message
+ * @returns {string|null} PR number or null if not found
+ */
+function extractPrNumber (commitMessage) {
+  if (!commitMessage) return null
+
+  const prMatch = commitMessage.match(ACTION_CONSTANTS.VALIDATION.PR_NUMBER_PATTERN)
+  return prMatch ? prMatch[1] : null
+}
+
+// ============================================================================
+// JIRA FIELD PREPARATION
+// ============================================================================
+
+/**
+ * Prepare fields for Jira transition, converting names to IDs where needed.
+ * @param {Object} fields - Fields object with field names and values
+ * @param {Object} jiraUtil - Jira utility instance
+ * @returns {Promise<Object>} Prepared fields object
  */
 async function prepareFields (fields, jiraUtil) {
+  const finishOp = logger.startOperation('prepareFields', {
+    fieldCount: Object.keys(fields).length,
+  })
+
   const preparedFields = {}
 
   for (const [ fieldName, fieldValue ] of Object.entries(fields)) {
-    if (fieldName === 'resolution' && typeof fieldValue === 'string') {
-      // Look up resolution ID by name
-      const resolutions = await jiraUtil.getFieldOptions('resolution')
-      const resolution = resolutions.find((r) => r.name === fieldValue)
-      if (resolution) {
-        preparedFields.resolution = { id: resolution.id }
-      } else {
-        console.warn(`Resolution "${fieldValue}" not found`)
+    // Convert function values to actual values
+    const actualValue = typeof fieldValue === 'function' ? fieldValue() : fieldValue
+
+    if (fieldName === 'resolution' && typeof actualValue === 'string') {
+      try {
+        const resolutions = await jiraUtil.getFieldOptions('resolution')
+        const resolution = resolutions.find((r) => r.name === actualValue)
+        if (resolution) {
+          preparedFields.resolution = { id: resolution.id }
+          logger.debug('Resolved resolution field', {
+            name: actualValue,
+            id: resolution.id,
+          })
+        } else {
+          logger.warn('Resolution not found', { resolution: actualValue })
+        }
+      } catch (error) {
+        logger.error('Failed to get resolution options', {
+          error: error.message,
+        })
       }
-    } else if (fieldName === 'priority' && typeof fieldValue === 'string') {
-      // Look up priority ID by name
-      const priorities = await jiraUtil.getFieldOptions('priority')
-      const priority = priorities.find((p) => p.name === fieldValue)
-      if (priority) {
-        preparedFields.priority = { id: priority.id }
+    } else if (fieldName === 'priority' && typeof actualValue === 'string') {
+      try {
+        const priorities = await jiraUtil.getFieldOptions('priority')
+        const priority = priorities.find((p) => p.name === actualValue)
+        if (priority) {
+          preparedFields.priority = { id: priority.id }
+          logger.debug('Resolved priority field', {
+            name: actualValue,
+            id: priority.id,
+          })
+        }
+      } catch (error) {
+        logger.error('Failed to get priority options', {
+          error: error.message,
+        })
       }
-    } else if (fieldName === 'assignee' && typeof fieldValue === 'string') {
-      // For assignee, you might need to look up the user
-      // This depends on your Jira configuration
-      preparedFields.assignee = { name: fieldValue }
+    } else if (fieldName === 'assignee' && typeof actualValue === 'string') {
+      preparedFields.assignee = { name: actualValue }
     } else {
-      // Pass through other fields as-is
-      preparedFields[fieldName] = fieldValue
+      preparedFields[fieldName] = actualValue
     }
   }
+
+  finishOp('success', {
+    preparedFieldCount: Object.keys(preparedFields).length,
+  })
 
   return preparedFields
 }
 
 /**
- * Update issue with transition and then update custom fields separately
+ * Prepare custom fields, resolving function values
+ * @param {Object} customFields - Custom fields object
+ * @returns {Object} Prepared custom fields
+ */
+function prepareCustomFields (customFields) {
+  const prepared = {}
+
+  for (const [ fieldId, fieldValue ] of Object.entries(customFields)) {
+    prepared[fieldId] = typeof fieldValue === 'function' ? fieldValue() : fieldValue
+  }
+
+  return prepared
+}
+
+// ============================================================================
+// ISSUE UPDATE FUNCTIONS
+// ============================================================================
+
+/**
+ * Updates a Jira issue with status transition and custom fields.
+ *
+ * Performs transition first, then updates custom fields separately to avoid
+ * field validation conflicts during transitions.
+ *
+ * @param {Object} jiraUtil - Jira utility instance
+ * @param {string} issueKey - Jira issue key (e.g., "DEX-123")
+ * @param {string} targetStatus - Target status name
+ * @param {string[]} excludeStates - States to exclude from transition path
+ * @param {Object} transitionFields - Fields to include in transition payload
+ * @param {Object} customFields - Custom fields to update after transition
+ * @returns {Promise<boolean>} True if update successful
+ * @throws {Error} If transition or custom field update fails
  */
 async function updateIssueWithCustomFields (
   jiraUtil,
@@ -288,12 +766,22 @@ async function updateIssueWithCustomFields (
   transitionFields,
   customFields
 ) {
+  const finishOp = logger.startOperation('updateIssueWithCustomFields', {
+    issueKey,
+    targetStatus,
+  })
+
   try {
-    // First, transition the issue with only transition-allowed fields
-    const preparedTransitionFields = await prepareFields(
-      transitionFields,
-      jiraUtil
-    )
+    // Prepare and perform transition
+    const preparedTransitionFields = await prepareFields(transitionFields, jiraUtil)
+
+    logger.debug('Transitioning issue', {
+      issueKey,
+      targetStatus,
+      excludeStates,
+      transitionFields: preparedTransitionFields,
+    })
+
     await jiraUtil.transitionIssue(
       issueKey,
       targetStatus,
@@ -301,296 +789,48 @@ async function updateIssueWithCustomFields (
       preparedTransitionFields
     )
 
-    // Then, if there are custom fields to update, update them separately
+    // Update custom fields if provided
     if (customFields && Object.keys(customFields).length > 0) {
-      await jiraUtil.updateCustomFields(issueKey, customFields)
+      const preparedCustomFields = prepareCustomFields(customFields)
+
+      logger.debug('Updating custom fields', {
+        issueKey,
+        customFields: preparedCustomFields,
+      })
+
+      await jiraUtil.updateCustomFields(issueKey, preparedCustomFields)
     }
+
+    finishOp('success')
+    logger.info('Issue updated successfully', {
+      issueKey,
+      targetStatus,
+    })
 
     return true
   } catch (error) {
-    console.error(`Failed to update ${issueKey}:`, error.message)
+    finishOp('error', { error: error.message })
+    logger.error('Failed to update issue', {
+      issueKey,
+      targetStatus,
+      error: error.message,
+      errorType: error.name,
+    })
     throw error
   }
 }
 
 /**
- * Handle pull request events (open, close, etc)
+ * Update multiple issues from commit history with status and custom fields.
+ * @param {Object} jiraUtil - Jira utility instance
+ * @param {string[]} issueKeys - Array of issue keys to update
+ * @param {string} targetStatus - Target status name
+ * @param {string[]} excludeStates - States to exclude from transition
+ * @param {Object} transitionFields - Fields for transition
+ * @param {Object} customFields - Custom fields to update
+ * @returns {Promise<Object>} Update results with counts and errors
  */
-async function handlePullRequestEvent (eventData, jiraUtil) {
-  const { action, pull_request } = eventData
-
-  const issueKeys = extractJiraIssueKeys(pull_request)
-  if (issueKeys.length === 0) {
-    console.log('No Jira issue keys found in PR')
-    return
-  }
-
-  console.log(`Found Jira issues: ${issueKeys.join(', ')}`)
-
-  let targetStatus = null
-  let transitionFields = {}
-  let customFields = {}
-  const targetBranch = pull_request.base.ref
-
-  switch (action) {
-    case 'opened':
-    case 'reopened':
-    case 'ready_for_review':
-      targetStatus = 'Code Review'
-      break
-    case 'converted_to_draft':
-      targetStatus = 'In Development'
-      break
-    case 'synchronize':
-      if (!pull_request.draft) {
-        targetStatus = 'Code Review'
-      }
-      break
-    case 'closed':
-      if (pull_request.merged) {
-        const branchConfig = statusMap[targetBranch]
-        if (branchConfig) {
-          targetStatus = branchConfig.status
-          transitionFields = branchConfig.transitionFields || {}
-          customFields = branchConfig.customFields || {}
-        } else {
-          targetStatus = 'Done'
-          transitionFields = { resolution: 'Done' }
-        }
-      } else {
-        console.log('PR closed without merging, skipping status update')
-        return
-      }
-      break
-    default:
-      console.log('No status updates for action:', action)
-      break
-  }
-
-  if (targetStatus) {
-    for (const issueKey of issueKeys) {
-      try {
-        await updateIssueWithCustomFields(
-          jiraUtil,
-          issueKey,
-          targetStatus,
-          [ 'Blocked', 'Rejected' ],
-          transitionFields,
-          customFields
-        )
-      } catch (error) {
-        console.error(`Failed to update ${issueKey}:`, error.message)
-      }
-    }
-  }
-}
-
-/**
- * Handle push events to branches
- */
-async function handlePushEvent (
-  branch,
-  jiraUtil,
-  githubRepository,
-  githubToken
-) {
-  const octokit = new Octokit({
-    auth: githubToken,
-  })
-
-  const [ githubOwner, repositoryName ] = githubRepository.split('/')
-  const { data } = await octokit.rest.repos.getCommit({
-    owner: githubOwner,
-    repo: repositoryName,
-    ref: branch,
-    perPage: 1,
-    page: 1,
-  })
-
-  const {
-    commit: { message: commitMessage },
-  } = data
-  const branchConfig = statusMap[branch]
-  if (!branchConfig) {
-    console.log(`No status mapping for branch: ${branch}`)
-    return
-  }
-
-  const newStatus = branchConfig.status
-  const transitionFields = branchConfig.transitionFields || {}
-  const customFields = branchConfig.customFields || {}
-
-  const shouldCheckCommitHistory = [ 'master', 'main', 'staging' ].includes(
-    branch
-  )
-
-  const prMatch = commitMessage.match(/#([0-9]+)/)
-
-  // Handle staging to production deployment
-  if (branch === 'master' || branch === 'main') {
-    console.log('Production deployment: extracting issues from commit history')
-
-    try {
-      const commitHistoryIssues = await jiraUtil.getIssueKeysFromCommitHistory(
-        'HEAD~100',
-        'HEAD'
-      )
-      if (commitHistoryIssues.length > 0) {
-        console.log(
-          `Found ${commitHistoryIssues.length} issues in production commit history`
-        )
-
-        const updateResults =
-          await updateIssuesFromCommitHistoryWithCustomFields(
-            jiraUtil,
-            commitHistoryIssues,
-            newStatus,
-            [ 'Blocked', 'Rejected' ],
-            transitionFields,
-            customFields
-          )
-
-        console.log(
-          `Production deployment results: ${updateResults.successful} successful, ${updateResults.failed} failed`
-        )
-      } else {
-        console.log('No Jira issues found in production commit history')
-      }
-    } catch (error) {
-      console.error(
-        'Error processing production commit history:',
-        error.message
-      )
-    }
-
-    // Also handle direct PR merges to production
-    if (prMatch) {
-      const prNumber = extractPrNumber(commitMessage)
-      const prUrl = `${repositoryName}/pull/${prNumber}`
-      if (prNumber) {
-        console.log(
-          `Also updating issues from PR ${prUrl} to production status`
-        )
-        await updateByPRWithCustomFields(
-          jiraUtil,
-          prUrl,
-          newStatus,
-          transitionFields,
-          customFields
-        )
-      }
-    }
-    return
-  }
-
-  // Handle dev to staging deployment
-  if (branch === 'staging') {
-    console.log('Staging deployment: extracting issues from commit history')
-
-    try {
-      // Get issue keys from commit history
-      const commitHistoryIssues =
-        await jiraUtil.extractIssueKeysFromGitHubContext(github.context)
-      if (commitHistoryIssues.length > 0) {
-        console.log(
-          `Found ${commitHistoryIssues.length} issues in staging commit history`
-        )
-
-        // Update issues found in commit history
-        const updateResults =
-          await updateIssuesFromCommitHistoryWithCustomFields(
-            jiraUtil,
-            commitHistoryIssues,
-            newStatus,
-            [ 'Blocked', 'Rejected' ],
-            transitionFields,
-            customFields
-          )
-
-        console.log(
-          `Staging deployment results: ${updateResults.successful} successful, ${updateResults.failed} failed`
-        )
-        return
-      } else {
-        console.log('No Jira issues found in staging commit history')
-        return
-      }
-    } catch (error) {
-      console.error('Error processing staging commit history:', error.message)
-    }
-
-    // Also handle direct PR merges to staging
-    if (prMatch) {
-      const prNumber = prMatch[1]
-      const prUrl = `${repositoryName}/pull/${prNumber}`
-      console.log(`Also updating issues from PR ${prUrl} to staging status`)
-      await updateByPRWithCustomFields(
-        jiraUtil,
-        prUrl,
-        newStatus,
-        transitionFields,
-        customFields
-      )
-    }
-    return
-  }
-
-  // Handle PR merges to other branches (like dev)
-  if (prMatch) {
-    const prNumber = prMatch[1]
-    const prUrl = `${repositoryName}/pull/${prNumber}`
-    console.log(
-      `Updating issues mentioning PR ${prUrl} to status: ${newStatus}`
-    )
-    await updateByPRWithCustomFields(
-      jiraUtil,
-      prUrl,
-      newStatus,
-      transitionFields,
-      customFields
-    )
-  }
-
-  // Additionally, for important branches, check commit history for issue keys
-  if (shouldCheckCommitHistory) {
-    try {
-      // Get issue keys from recent commit history (last 50 commits)
-      const commitHistoryIssues = await jiraUtil.getIssueKeysFromCommitHistory(
-        'HEAD~50',
-        'HEAD'
-      )
-
-      if (commitHistoryIssues.length > 0) {
-        console.log(
-          `Found ${commitHistoryIssues.length} additional issues in commit history for ${branch} branch`
-        )
-
-        // Update issues found in commit history
-        const updateResults =
-          await updateIssuesFromCommitHistoryWithCustomFields(
-            jiraUtil,
-            commitHistoryIssues,
-            newStatus,
-            [ 'Blocked', 'Rejected' ],
-            transitionFields,
-            customFields
-          )
-
-        console.log(
-          `Commit history update results: ${updateResults.successful} successful, ${updateResults.failed} failed`
-        )
-      }
-    } catch (error) {
-      console.error('Error processing commit history:', error.message)
-      // Don't fail the entire action if commit history processing fails
-    }
-  }
-}
-
-/**
- * Update issues from commit history with separate custom field updates
- */
-async function updateIssuesFromCommitHistoryWithCustomFields (
+async function updateIssuesFromCommitHistory (
   jiraUtil,
   issueKeys,
   targetStatus,
@@ -598,15 +838,27 @@ async function updateIssuesFromCommitHistoryWithCustomFields (
   transitionFields,
   customFields
 ) {
+  const finishOp = logger.startOperation('updateIssuesFromCommitHistory', {
+    issueCount: issueKeys.length,
+    targetStatus,
+  })
+
   if (!issueKeys || issueKeys.length === 0) {
-    console.log('No issue keys provided for update')
+    logger.info('No issue keys provided for update')
+    finishOp('success', { skipped: true })
     return { successful: 0, failed: 0, errors: [] }
   }
 
-  console.log(`Updating ${issueKeys.length} issues to status: ${targetStatus}`)
+  // Deduplicate issue keys
+  const uniqueIssueKeys = deduplicateIssueKeys(issueKeys)
+
+  logger.info('Updating issues from commit history', {
+    totalIssues: uniqueIssueKeys.length,
+    targetStatus,
+  })
 
   const results = await Promise.allSettled(
-    issueKeys.map((issueKey) =>
+    uniqueIssueKeys.map((issueKey) =>
       updateIssueWithCustomFields(
         jiraUtil,
         issueKey,
@@ -618,19 +870,29 @@ async function updateIssuesFromCommitHistoryWithCustomFields (
     )
   )
 
-  const successful = results.filter(
-    (result) => result.status === 'fulfilled'
-  ).length
-  const failed = results.filter((result) => result.status === 'rejected')
-  const errors = failed.map(
-    (result) => result.reason?.message || 'Unknown error'
-  )
+  const successful = results.filter((r) => r.status === 'fulfilled').length
+  const failed = results.filter((r) => r.status === 'rejected')
+  const errors = failed.map((r) => ({
+    message: r.reason?.message || 'Unknown error',
+    issueKey: r.reason?.issueKey,
+  }))
 
-  console.log(
-    `Update summary: ${successful} successful, ${failed.length} failed`
-  )
+  finishOp('success', {
+    successful,
+    failed: failed.length,
+  })
+
+  logger.info('Commit history update completed', {
+    successful,
+    failed: failed.length,
+    total: uniqueIssueKeys.length,
+  })
+
   if (failed.length > 0) {
-    console.log('Failed updates:', errors)
+    logger.warn('Some updates failed', {
+      failedCount: failed.length,
+      errors: errors.slice(0, 5), // Log first 5 errors
+    })
   }
 
   return {
@@ -641,79 +903,720 @@ async function updateIssuesFromCommitHistoryWithCustomFields (
 }
 
 /**
- * Update issues by PR with separate custom field updates
+ * Update issues by PR URL search with status and custom fields.
+ * @param {Object} jiraUtil - Jira utility instance
+ * @param {string} prUrl - Pull request URL to search for
+ * @param {string} targetStatus - Target status name
+ * @param {Object} transitionFields - Fields for transition
+ * @param {Object} customFields - Custom fields to update
+ * @returns {Promise<number>} Number of issues updated
+ * @throws {Error} If JQL search or update fails
  */
-async function updateByPRWithCustomFields (
+async function updateIssuesByPR (
   jiraUtil,
   prUrl,
-  newStatus,
+  targetStatus,
   transitionFields,
   customFields
 ) {
+  const finishOp = logger.startOperation('updateIssuesByPR', {
+    prUrl,
+    targetStatus,
+  })
+
   try {
     const jql = `text ~ "${prUrl}"`
+    logger.debug('Searching for issues by PR URL', { prUrl, jql })
+
     const response = await jiraUtil.request('/search/jql', {
       method: 'POST',
       body: JSON.stringify({
         jql,
         fields: [ 'key', 'summary', 'status', 'description' ],
-        maxResults: 50,
+        maxResults: ACTION_CONSTANTS.GITHUB_API.MAX_RESULTS,
       }),
     })
 
     const data = await response.json()
-    const issues = data.issues
-    console.log(`Found ${issues.length} issues mentioning PR ${prUrl}`)
+    const issues = data.issues || []
 
-    for (const issue of issues) {
-      await updateIssueWithCustomFields(
-        jiraUtil,
-        issue.key,
-        newStatus,
-        [ 'Blocked', 'Rejected' ],
-        transitionFields,
-        customFields
-      )
+    logger.info('Found issues mentioning PR', {
+      prUrl,
+      issueCount: issues.length,
+    })
+
+    if (issues.length === 0) {
+      finishOp('success', { issuesFound: 0 })
+      return 0
     }
+
+    const issueKeys = issues.map(issue => issue.key)
+    const updateResults = await updateIssuesFromCommitHistory(
+      jiraUtil,
+      issueKeys,
+      targetStatus,
+      ACTION_CONSTANTS.EXCLUDED_STATES,
+      transitionFields,
+      customFields
+    )
+
+    finishOp('success', {
+      issuesFound: issues.length,
+      successful: updateResults.successful,
+      failed: updateResults.failed,
+    })
 
     return issues.length
   } catch (error) {
-    console.error(`Error updating issues by PR:`, error.message)
+    finishOp('error', { error: error.message })
+    logger.error('Error updating issues by PR', {
+      prUrl,
+      error: error.message,
+    })
+    throw error
+  }
+}
+
+// ============================================================================
+// GITHUB API HELPERS
+// ============================================================================
+
+/**
+ * Fetch GitHub data with retry logic for rate limiting
+ * @param {Function} operation - Async operation to perform
+ * @param {Object} params - Operation parameters
+ * @param {number} [retryCount=0] - Current retry attempt
+ * @returns {Promise<*>} Operation result
+ * @throws {GitHubApiError} If all retries fail
+ */
+async function fetchGitHubDataWithRetry (operation, params, retryCount = 0) {
+  try {
+    return await operation(params)
+  } catch (error) {
+    // Handle rate limiting
+    if (error.status === 429 && retryCount < ACTION_CONSTANTS.RETRY.MAX_ATTEMPTS) {
+      const retryAfter = parseInt(error.response?.headers['retry-after'] || '60', 10)
+      const delay = retryAfter * 1000
+
+      logger.warn('GitHub rate limit hit, retrying', {
+        retryAfter,
+        retryCount,
+        nextRetryIn: delay,
+      })
+
+      await sleep(delay)
+      return fetchGitHubDataWithRetry(operation, params, retryCount + 1)
+    }
+
+    // Handle server errors with exponential backoff
+    if (error.status >= 500 && retryCount < ACTION_CONSTANTS.RETRY.MAX_ATTEMPTS) {
+      const delay = ACTION_CONSTANTS.RETRY.BASE_DELAY_MS *
+        Math.pow(ACTION_CONSTANTS.RETRY.BACKOFF_MULTIPLIER, retryCount)
+
+      logger.warn('GitHub server error, retrying', {
+        status: error.status,
+        retryCount,
+        nextRetryIn: delay,
+      })
+
+      await sleep(delay)
+      return fetchGitHubDataWithRetry(operation, params, retryCount + 1)
+    }
+
+    throw new GitHubApiError(
+      `GitHub API error: ${error.message}`,
+      error.status || 0,
+      'fetchGitHubData'
+    )
+  }
+}
+
+// ============================================================================
+// EVENT HANDLERS
+// ============================================================================
+
+/**
+ * Handle pull request events (open, close, synchronize, etc).
+ * @param {Object} eventData - GitHub event payload
+ * @param {Object} jiraUtil - Jira utility instance
+ * @returns {Promise<void>}
+ */
+async function handlePullRequestEvent (eventData, jiraUtil) {
+  const finishOp = logger.startOperation('handlePullRequestEvent', {
+    action: eventData.action,
+    prNumber: eventData.pull_request?.number,
+  })
+
+  try {
+    const { action, pull_request } = eventData
+
+    // Extract issue keys from PR
+    const issueKeys = extractJiraIssueKeys(pull_request)
+
+    if (issueKeys.length === 0) {
+      logger.info('No Jira issue keys found in PR', {
+        prNumber: pull_request.number,
+        prTitle: pull_request.title,
+      })
+      finishOp('success', { issueKeysFound: 0, skipped: true })
+      return
+    }
+
+    logger.info('Processing PR event', {
+      action,
+      prNumber: pull_request.number,
+      issueKeys,
+      targetBranch: pull_request.base.ref,
+    })
+
+    let targetStatus = null
+    let transitionFields = {}
+    let customFields = {}
+    const targetBranch = pull_request.base.ref
+
+    // Determine target status based on PR action
+    switch (action) {
+      case ACTION_CONSTANTS.PR_ACTIONS.OPENED:
+      case ACTION_CONSTANTS.PR_ACTIONS.REOPENED:
+      case ACTION_CONSTANTS.PR_ACTIONS.READY_FOR_REVIEW:
+        targetStatus = ACTION_CONSTANTS.JIRA_STATUSES.CODE_REVIEW
+        break
+
+      case ACTION_CONSTANTS.PR_ACTIONS.CONVERTED_TO_DRAFT:
+        targetStatus = ACTION_CONSTANTS.JIRA_STATUSES.IN_DEVELOPMENT
+        break
+
+      case ACTION_CONSTANTS.PR_ACTIONS.SYNCHRONIZE:
+        if (!pull_request.draft) {
+          targetStatus = ACTION_CONSTANTS.JIRA_STATUSES.CODE_REVIEW
+        }
+        break
+
+      case ACTION_CONSTANTS.PR_ACTIONS.CLOSED:
+        if (pull_request.merged) {
+          const branchConfig = STATUS_MAP[targetBranch]
+          if (branchConfig) {
+            targetStatus = branchConfig.status
+            transitionFields = branchConfig.transitionFields || {}
+            customFields = branchConfig.customFields || {}
+          } else {
+            logger.warn('No status mapping for target branch, using default', {
+              targetBranch,
+            })
+            targetStatus = ACTION_CONSTANTS.JIRA_STATUSES.DONE
+            transitionFields = { resolution: 'Done' }
+          }
+        } else {
+          logger.info('PR closed without merging, skipping status update', {
+            prNumber: pull_request.number,
+          })
+          finishOp('success', { skipped: true, reason: 'not_merged' })
+          return
+        }
+        break
+
+      default:
+        logger.info('No status updates for PR action', { action })
+        finishOp('success', { skipped: true, reason: 'unsupported_action' })
+        return
+    }
+
+    if (!targetStatus) {
+      logger.debug('No target status determined', { action })
+      finishOp('success', { skipped: true })
+      return
+    }
+
+    // Update all issues
+    const failedUpdates = []
+    for (const issueKey of issueKeys) {
+      try {
+        await updateIssueWithCustomFields(
+          jiraUtil,
+          issueKey,
+          targetStatus,
+          ACTION_CONSTANTS.EXCLUDED_STATES,
+          transitionFields,
+          customFields
+        )
+      } catch (error) {
+        logger.error('Failed to update issue from PR event', {
+          issueKey,
+          targetStatus,
+          action,
+          prNumber: pull_request.number,
+          error: error.message,
+        })
+        failedUpdates.push({ issueKey, error: error.message })
+      }
+    }
+
+    finishOp('success', {
+      issuesProcessed: issueKeys.length,
+      successful: issueKeys.length - failedUpdates.length,
+      failed: failedUpdates.length,
+    })
+
+    logger.info('PR event processing completed', {
+      action,
+      prNumber: pull_request.number,
+      issuesProcessed: issueKeys.length,
+      successful: issueKeys.length - failedUpdates.length,
+      failed: failedUpdates.length,
+    })
+  } catch (error) {
+    finishOp('error', { error: error.message })
     throw error
   }
 }
 
 /**
- * Extract Jira issue keys from PR title or body
- * @param {Object} pullRequest - GitHub PR object
- * @returns {Array<string>} Array of Jira issue keys
+ * Handle push events to branches (deployment tracking).
+ * @param {string} branch - Branch name
+ * @param {Object} jiraUtil - Jira utility instance
+ * @param {string} githubRepository - Repository in "owner/repo" format
+ * @param {string} githubToken - GitHub API token
+ * @returns {Promise<void>}
  */
-function extractJiraIssueKeys (pullRequest) {
-  const jiraKeyPattern = /[A-Z]+-[0-9]+/g
-  const keys = new Set()
+async function handlePushEvent (branch, jiraUtil, githubRepository, githubToken) {
+  const finishOp = logger.startOperation('handlePushEvent', {
+    branch,
+    repository: githubRepository,
+  })
 
-  if (pullRequest.title) {
-    const titleMatches = pullRequest.title.match(jiraKeyPattern)
-    if (titleMatches) {
-      titleMatches.forEach((key) => keys.add(key))
+  try {
+    const { owner, repo } = parseRepository(githubRepository)
+
+    // Get branch configuration
+    const branchConfig = STATUS_MAP[branch]
+    if (!branchConfig) {
+      logger.warn('No status mapping for branch, skipping', { branch })
+      finishOp('success', { skipped: true, reason: 'no_config' })
+      return
     }
-  }
 
-  return Array.from(keys)
+    const targetStatus = branchConfig.status
+    const transitionFields = branchConfig.transitionFields || {}
+    const customFields = branchConfig.customFields || {}
+
+    logger.info('Processing push event', {
+      branch,
+      targetStatus,
+      repository: githubRepository,
+    })
+
+    // Initialize Octokit
+    const octokit = new Octokit({ auth: githubToken })
+
+    // Get latest commit
+    const { data } = await fetchGitHubDataWithRetry(
+      async () => octokit.rest.repos.getCommit({
+        owner,
+        repo,
+        ref: branch,
+      }),
+      {}
+    )
+
+    const commitMessage = data.commit.message
+    logger.debug('Latest commit retrieved', {
+      sha: data.sha.substring(0, 7),
+      message: commitMessage.split('\n')[0],
+    })
+
+    const prNumber = extractPrNumber(commitMessage)
+
+    // Handle production deployments (master/main)
+    if (ACTION_CONSTANTS.BRANCHES.PRODUCTION.includes(branch)) {
+      logger.info('Production deployment detected', { branch })
+
+      try {
+        const commitHistoryIssues = await jiraUtil.getIssueKeysFromCommitHistory(
+          ACTION_CONSTANTS.COMMIT_HISTORY.PRODUCTION_RANGE,
+          ACTION_CONSTANTS.COMMIT_HISTORY.HEAD
+        )
+
+        if (commitHistoryIssues.length > 0) {
+          logger.info('Found issues in production commit history', {
+            issueCount: commitHistoryIssues.length,
+          })
+
+          const updateResults = await updateIssuesFromCommitHistory(
+            jiraUtil,
+            commitHistoryIssues,
+            targetStatus,
+            ACTION_CONSTANTS.EXCLUDED_STATES,
+            transitionFields,
+            customFields
+          )
+
+          logger.info('Production deployment completed', {
+            successful: updateResults.successful,
+            failed: updateResults.failed,
+          })
+        } else {
+          logger.info('No Jira issues found in production commit history')
+        }
+      } catch (error) {
+        logger.error('Error processing production commit history', {
+          error: error.message,
+        })
+      }
+
+      // Also handle direct PR merges to production
+      if (prNumber) {
+        const prUrl = constructPrUrl(owner, repo, prNumber)
+        logger.info('Processing direct PR merge to production', { prUrl })
+
+        try {
+          await updateIssuesByPR(
+            jiraUtil,
+            prUrl,
+            targetStatus,
+            transitionFields,
+            customFields
+          )
+        } catch (error) {
+          logger.error('Error updating issues from PR to production', {
+            prUrl,
+            error: error.message,
+          })
+        }
+      }
+
+      finishOp('success', { branch, type: 'production' })
+      return
+    }
+
+    // Handle staging deployments
+    if (branch === ACTION_CONSTANTS.BRANCHES.STAGING) {
+      logger.info('Staging deployment detected', { branch })
+
+      try {
+        const commitHistoryIssues = await jiraUtil.extractIssueKeysFromGitHubContext(
+          github.context
+        )
+
+        if (commitHistoryIssues.length > 0) {
+          logger.info('Found issues in staging commit history', {
+            issueCount: commitHistoryIssues.length,
+          })
+
+          const updateResults = await updateIssuesFromCommitHistory(
+            jiraUtil,
+            commitHistoryIssues,
+            targetStatus,
+            ACTION_CONSTANTS.EXCLUDED_STATES,
+            transitionFields,
+            customFields
+          )
+
+          logger.info('Staging deployment completed', {
+            successful: updateResults.successful,
+            failed: updateResults.failed,
+          })
+
+          finishOp('success', {
+            branch,
+            type: 'staging',
+            issuesUpdated: updateResults.successful,
+          })
+          return
+        } else {
+          logger.info('No Jira issues found in staging commit history')
+        }
+      } catch (error) {
+        logger.error('Error processing staging commit history', {
+          error: error.message,
+        })
+      }
+
+      // Also handle direct PR merges to staging
+      if (prNumber) {
+        const prUrl = constructPrUrl(owner, repo, prNumber)
+        logger.info('Processing direct PR merge to staging', { prUrl })
+
+        try {
+          await updateIssuesByPR(
+            jiraUtil,
+            prUrl,
+            targetStatus,
+            transitionFields,
+            customFields
+          )
+        } catch (error) {
+          logger.error('Error updating issues from PR to staging', {
+            prUrl,
+            error: error.message,
+          })
+        }
+      }
+
+      finishOp('success', { branch, type: 'staging' })
+      return
+    }
+
+    // Handle other branch merges (like dev)
+    if (prNumber) {
+      const prUrl = constructPrUrl(owner, repo, prNumber)
+      logger.info('Processing PR merge', { branch, prUrl })
+
+      try {
+        await updateIssuesByPR(
+          jiraUtil,
+          prUrl,
+          targetStatus,
+          transitionFields,
+          customFields
+        )
+        finishOp('success', { branch, type: 'pr_merge', prUrl })
+      } catch (error) {
+        logger.error('Error updating issues from PR', {
+          prUrl,
+          error: error.message,
+        })
+        finishOp('error', { error: error.message })
+      }
+    } else {
+      logger.info('No PR number found in commit message', { branch })
+      finishOp('success', { skipped: true, reason: 'no_pr_number' })
+    }
+  } catch (error) {
+    finishOp('error', { error: error.message })
+    logger.error('Error in handlePushEvent', {
+      branch,
+      error: error.message,
+    })
+    throw error
+  }
+}
+
+// ============================================================================
+// EVENT ROUTER
+// ============================================================================
+
+/**
+ * Route event to appropriate handler based on event type.
+ * @param {string} eventType - GitHub event type
+ * @param {Object} eventData - Event payload
+ * @param {Object} context - Execution context
+ * @returns {Promise<void>}
+ */
+async function routeEvent (eventType, eventData, context) {
+  const finishOp = logger.startOperation('routeEvent', {
+    eventType,
+    dryRun: context.dryRun,
+  })
+
+  try {
+    // Validate event data
+    validateEventData(eventData, eventType)
+
+    // Check dry run mode
+    if (context.dryRun) {
+      logger.info('DRY RUN: Skipping actual Jira updates', { eventType })
+      finishOp('success', { dryRun: true })
+      return
+    }
+
+    // Route to appropriate handler
+    if (eventType === ACTION_CONSTANTS.GITHUB_ACTIONS.PULL_REQUEST ||
+        eventType === ACTION_CONSTANTS.GITHUB_ACTIONS.PULL_REQUEST_TARGET) {
+      await handlePullRequestEvent(
+        eventData,
+        context.jiraUtil
+      )
+    } else if (eventType === ACTION_CONSTANTS.GITHUB_ACTIONS.PUSH) {
+      // Extract branch name from ref
+      const branchName = context.githubRef.split('/').pop()
+      await handlePushEvent(
+        branchName,
+        context.jiraUtil,
+        context.githubRepository,
+        context.githubToken
+      )
+    } else {
+      logger.warn('No handler for event type', { eventType })
+    }
+
+    finishOp('success')
+  } catch (error) {
+    finishOp('error', { error: error.message })
+    throw error
+  }
+}
+
+// ============================================================================
+// EVENT LOADING
+// ============================================================================
+
+/**
+ * Load event data from file system
+ * @param {string} eventPath - Path to event file
+ * @param {string} environment - Runtime environment
+ * @returns {Object|null} Event data or null if not available
+ */
+function loadEventData (eventPath, environment) {
+  const finishOp = logger.startOperation('loadEventData', {
+    environment,
+  })
+
+  try {
+    // Local environment - check for override file first
+    if (environment === 'local') {
+      const localEventPath = './update_jira/event.local.json'
+      if (fs.existsSync(localEventPath)) {
+        logger.info('Loading local event override', { path: localEventPath })
+        const data = JSON.parse(fs.readFileSync(localEventPath, 'utf8'))
+        finishOp('success', { source: 'local_override' })
+        return data
+      }
+    }
+
+    // Load from GITHUB_EVENT_PATH
+    if (eventPath && fs.existsSync(eventPath)) {
+      logger.info('Loading event from GITHUB_EVENT_PATH', { path: eventPath })
+      const data = JSON.parse(fs.readFileSync(eventPath, 'utf8'))
+      finishOp('success', { source: 'github_event_path' })
+      return data
+    }
+
+    logger.debug('No event data file found')
+    finishOp('success', { source: 'none' })
+    return null
+  } catch (error) {
+    finishOp('error', { error: error.message })
+    logger.error('Error loading event data', {
+      eventPath,
+      error: error.message,
+    })
+    throw new EventProcessingError(
+      `Failed to load event data: ${error.message}`,
+      'unknown',
+      null
+    )
+  }
+}
+
+// ============================================================================
+// MAIN EXECUTION
+// ============================================================================
+
+/**
+ * Log environment and startup information
+ */
+function logStartupInfo (config) {
+  logger.info('='.repeat(50))
+  logger.info('GitHub Actions: Jira Integration')
+  logger.info('='.repeat(50))
+  logger.info('Environment Information', {
+    environment: config.environment,
+    githubRef: config.github.ref,
+    githubEventName: config.github.eventName,
+    githubRepository: config.github.repository,
+    jiraBaseUrl: config.jira.baseUrl,
+    dryRun: config.dryRun,
+  })
+  logger.info('='.repeat(50))
 }
 
 /**
- * Extract PR number from commit message
- * @param {string} commitMessage - Git commit message
- * @returns {string|null} PR number or null if not found
+ * Main execution function
+ * @returns {Promise<void>}
  */
-function extractPrNumber (commitMessage) {
-  const prMatch = commitMessage.match(/#([0-9]+)/)
-  return prMatch ? prMatch[1] : null
+async function run () {
+  const finishOp = logger.startOperation('run')
+
+  try {
+    // Load and validate configuration
+    const config = loadAndValidateConfiguration()
+
+    // Log startup info
+    logStartupInfo(config)
+
+    // Initialize Jira utility
+    logger.debug('Initializing Jira utility')
+    const jiraUtil = new Jira({
+      baseUrl: config.jira.baseUrl,
+      email: config.jira.email,
+      apiToken: config.jira.apiToken,
+      logLevel: config.jira.logLevel,
+    })
+    logger.info('Jira utility initialized successfully')
+
+    // Load event data
+    const eventData = loadEventData(
+      config.github.eventPath,
+      config.environment
+    )
+
+    if (!eventData) {
+      logger.warn('No event data available, cannot process event')
+      finishOp('success', { skipped: true, reason: 'no_event_data' })
+      return
+    }
+
+    // Create execution context
+    const context = {
+      jiraUtil,
+      githubRepository: config.github.repository,
+      githubToken: config.github.token,
+      githubRef: config.github.ref,
+      dryRun: config.dryRun,
+    }
+
+    // Route event to appropriate handler
+    if (config.github.eventName === ACTION_CONSTANTS.GITHUB_ACTIONS.PULL_REQUEST ||
+        config.github.eventName === ACTION_CONSTANTS.GITHUB_ACTIONS.PULL_REQUEST_TARGET) {
+      await routeEvent(config.github.eventName, eventData, context)
+    } else if (ACTION_CONSTANTS.BRANCHES.ALLOWED_REFS.includes(config.github.ref)) {
+      // Push event
+      await routeEvent(ACTION_CONSTANTS.GITHUB_ACTIONS.PUSH, eventData, context)
+    } else {
+      logger.info('Event not applicable for Jira updates', {
+        eventName: config.github.eventName,
+        ref: config.github.ref,
+      })
+    }
+
+    finishOp('success')
+    logger.info('Action completed successfully')
+  } catch (error) {
+    finishOp('error', { error: error.message })
+    logger.error('Action failed', {
+      error: error.message,
+      errorType: error.name,
+      stack: error.stack,
+    })
+    core.setFailed(error.message)
+  }
 }
 
-// Export helpers for testability
+// ============================================================================
+// EXPORTS
+// ============================================================================
+
 module.exports = Object.assign(module.exports || {}, {
-  maskSensitive,
+  // For testing
   detectEnvironment,
+  extractJiraIssueKeys,
+  extractPrNumber,
+  deduplicateIssueKeys,
+  constructPrUrl,
+  parseRepository,
+  isValidIssueKey,
+  // Error classes
+  GitHubActionError,
+  EventProcessingError,
+  ConfigurationError,
+  GitHubApiError,
 })
+
+// ============================================================================
+// STARTUP
+// ============================================================================
+
+// Execute if run directly (not imported)
+if (require.main === module) {
+  run()
+}

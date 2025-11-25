@@ -4,8 +4,31 @@
   "description": "GitHub Actions for automating Jira issue management",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:verbose": "jest --verbose",
+    "test:unit": "jest --testPathIgnorePatterns=integration",
+    "test:integration": "node utils/jira.integration.test.js",
     "lint": "npx eslint --ext .js ."
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "coverageDirectory": "./coverage",
+    "collectCoverageFrom": [
+      "utils/**/*.js",
+      "update_jira/**/*.js",
+      "!**/*.test.js",
+      "!**/*.integration.test.js",
+      "!**/node_modules/**"
+    ],
+    "testMatch": [
+      "**/*.test.js"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "integration.test.js"
+    ]
   },
   "repository": {
     "type": "git",
@@ -25,8 +48,10 @@
     "dotenv": "^17.2.3"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "eslint": "^8.3.0",
     "husky": "^7.0.4",
+    "jest": "^30.2.0",
     "lint-staged": "^12.1.2"
   },
   "husky": {
