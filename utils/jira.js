@@ -760,16 +760,21 @@ class Jira {
   }
 
   /**
-   * Get workflow name for a specific project
+   * Get workflow name for a specific project and issue type
    * @param {string} projectKey - Project key
+   * @param {Object|null} issueType - Issue type object with id and name properties
    * @returns {Promise<string>} Workflow name
    * @throws {JiraValidationError} If projectKey is invalid
    * @throws {JiraWorkflowError} If no workflow scheme found
    * @throws {JiraApiError} If API request fails
    */
-  async getProjectWorkflowName (projectKey) {
+  async getProjectWorkflowName (projectKey, issueType = null) {
     const logger = this.logger.child('getProjectWorkflowName')
-    const endOp = logger.startOperation('getProjectWorkflowName', { projectKey })
+    const endOp = logger.startOperation('getProjectWorkflowName', {
+      projectKey,
+      issueTypeId: issueType?.id,
+      issueTypeName: issueType?.name,
+    })
 
     try {
       // Validate input
@@ -783,7 +788,11 @@ class Jira {
 
       const normalizedKey = projectKey.trim().toUpperCase()
 
-      logger.info(`Fetching workflow for project`, { projectKey: normalizedKey })
+      logger.info(`Fetching workflow for project`, {
+        projectKey: normalizedKey,
+        issueTypeId: issueType?.id,
+        issueTypeName: issueType?.name,
+      })
 
       // Get project details
       const projectResponse = await this.request(`/project/${normalizedKey}`)
@@ -810,10 +819,45 @@ class Jira {
       }
 
       const scheme = workflowScheme.values[0]
-      const workflowName = scheme.workflowScheme.defaultWorkflow
+      let workflowName = scheme.workflowScheme.defaultWorkflow
+
+      // If issue type is provided, look for issue-type-specific workflow
+      // issueTypeMappings uses issue type IDs as keys, not names
+      if (issueType && scheme.workflowScheme.issueTypeMappings) {
+        const issueTypeId = String(issueType.id)
+
+        logger.debug(`Looking for issue-type-specific workflow`, {
+          issueTypeId,
+          issueTypeName: issueType.name,
+          mappingsCount: Object.keys(scheme.workflowScheme.issueTypeMappings).length,
+          availableMappings: Object.keys(scheme.workflowScheme.issueTypeMappings),
+        })
+
+        // Check if there's a specific workflow for this issue type ID
+        const issueTypeWorkflow = scheme.workflowScheme.issueTypeMappings[issueTypeId]
+
+        if (issueTypeWorkflow) {
+          workflowName = issueTypeWorkflow
+          logger.info(`Found issue-type-specific workflow`, {
+            projectKey: normalizedKey,
+            issueTypeId,
+            issueTypeName: issueType.name,
+            workflowName,
+          })
+        } else {
+          logger.debug(`No specific workflow for issue type, using default`, {
+            projectKey: normalizedKey,
+            issueTypeId,
+            issueTypeName: issueType.name,
+            defaultWorkflow: workflowName,
+          })
+        }
+      }
 
       logger.info(`Retrieved workflow for project`, {
         projectKey: normalizedKey,
+        issueTypeId: issueType?.id,
+        issueTypeName: issueType?.name,
         workflowName,
         schemeName: scheme.workflowScheme.name,
       })
@@ -1478,13 +1522,15 @@ class Jira {
         return true
       }
 
-      // Get workflow for this project
+      // Get workflow for this project and issue type
       const projectKey = this._extractProjectKey(validatedKey)
-      const workflowName = await this.getProjectWorkflowName(projectKey)
+      const workflowName = await this.getProjectWorkflowName(projectKey, issueType)
       const stateMachine = await this.getWorkflowStateMachine(workflowName)
 
       logger.debug('Retrieved workflow information', {
         projectKey,
+        issueTypeId: issueType.id,
+        issueTypeName: issueType.name,
         workflowName,
         statusCount: Object.keys(stateMachine.states).length,
       })
