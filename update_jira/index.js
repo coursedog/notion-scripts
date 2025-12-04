@@ -103,9 +103,7 @@ const ACTION_CONSTANTS = {
 const STATUS_MAP = {
   master: {
     status: ACTION_CONSTANTS.JIRA_STATUSES.DONE,
-    transitionFields: {
-      resolution: 'Done',
-    },
+    transitionFields: {},
     customFields: {
       [ACTION_CONSTANTS.CUSTOM_FIELDS.PRODUCTION_TIMESTAMP]: () => new Date(),
       [ACTION_CONSTANTS.CUSTOM_FIELDS.RELEASE_ENVIRONMENT]: { id: ACTION_CONSTANTS.RELEASE_ENV_IDS.PRODUCTION },
@@ -113,9 +111,7 @@ const STATUS_MAP = {
   },
   main: {
     status: ACTION_CONSTANTS.JIRA_STATUSES.DONE,
-    transitionFields: {
-      resolution: 'Done',
-    },
+    transitionFields: {},
     customFields: {
       [ACTION_CONSTANTS.CUSTOM_FIELDS.PRODUCTION_TIMESTAMP]: () => new Date(),
       [ACTION_CONSTANTS.CUSTOM_FIELDS.RELEASE_ENVIRONMENT]: { id: ACTION_CONSTANTS.RELEASE_ENV_IDS.PRODUCTION },
@@ -123,9 +119,7 @@ const STATUS_MAP = {
   },
   staging: {
     status: ACTION_CONSTANTS.JIRA_STATUSES.DEPLOYED_TO_STAGING,
-    transitionFields: {
-      resolution: 'Done',
-    },
+    transitionFields: {},
     customFields: {
       [ACTION_CONSTANTS.CUSTOM_FIELDS.STAGING_TIMESTAMP]: () => new Date(),
       [ACTION_CONSTANTS.CUSTOM_FIELDS.RELEASE_ENVIRONMENT]: { id: ACTION_CONSTANTS.RELEASE_ENV_IDS.STAGING },
@@ -1231,29 +1225,48 @@ async function handlePushEvent (branch, jiraUtil, githubRepository, githubToken)
       logger.info('Production deployment detected', { branch })
 
       try {
-        const commitHistoryIssues = await jiraUtil.getIssueKeysFromCommitHistory(
-          ACTION_CONSTANTS.COMMIT_HISTORY.PRODUCTION_RANGE,
-          ACTION_CONSTANTS.COMMIT_HISTORY.HEAD
+        // Use GitHub context to extract issues (same as staging)
+        // This is more reliable than git log in GitHub Actions environment
+        const commitHistoryIssues = await jiraUtil.extractIssueKeysFromGitHubContext(
+          github.context
         )
 
         if (commitHistoryIssues.length > 0) {
           logger.info('Found issues in production commit history', {
             issueCount: commitHistoryIssues.length,
+            issueKeys: commitHistoryIssues,
           })
 
-          const updateResults = await updateIssuesFromCommitHistory(
-            jiraUtil,
-            commitHistoryIssues,
-            targetStatus,
-            ACTION_CONSTANTS.EXCLUDED_STATES,
-            transitionFields,
-            customFields
+          // For production: ONLY update custom fields, Jira automation handles status transition
+          // Setting Production Release Timestamp + Release Environment triggers auto-transition to Done
+          const preparedCustomFields = prepareCustomFields(customFields)
+
+          logger.info('Updating production custom fields (Jira automation will handle status transition)', {
+            issueCount: commitHistoryIssues.length,
+            fields: Object.keys(preparedCustomFields),
+          })
+
+          const results = await Promise.allSettled(
+            commitHistoryIssues.map((issueKey) =>
+              jiraUtil.updateCustomFields(issueKey, preparedCustomFields)
+            )
           )
 
+          const successful = results.filter((r) => r.status === 'fulfilled').length
+          const failed = results.filter((r) => r.status === 'rejected')
+
           logger.info('Production deployment completed', {
-            successful: updateResults.successful,
-            failed: updateResults.failed,
+            successful,
+            failed: failed.length,
+            issueKeys: commitHistoryIssues,
           })
+
+          if (failed.length > 0) {
+            logger.warn('Some production updates failed', {
+              failedCount: failed.length,
+              errors: failed.map(r => r.reason?.message).slice(0, 5),
+            })
+          }
         } else {
           logger.info('No Jira issues found in production commit history')
         }
@@ -1269,13 +1282,47 @@ async function handlePushEvent (branch, jiraUtil, githubRepository, githubToken)
         logger.info('Processing direct PR merge to production', { prUrl })
 
         try {
-          await updateIssuesByPR(
-            jiraUtil,
-            prUrl,
-            targetStatus,
-            transitionFields,
-            customFields
-          )
+          // Search for issues mentioning this PR
+          const jql = `text ~ "${prUrl}"`
+          const response = await jiraUtil.request('/search', {
+            method: 'POST',
+            body: JSON.stringify({
+              jql,
+              fields: [ 'key', 'summary', 'status' ],
+              maxResults: ACTION_CONSTANTS.GITHUB_API.MAX_RESULTS,
+            }),
+          })
+
+          const data = await response.json()
+          const issues = data.issues || []
+
+          if (issues.length > 0) {
+            logger.info('Found issues for PR in production', {
+              prUrl,
+              issueCount: issues.length,
+              issueKeys: issues.map(i => i.key),
+            })
+
+            // For production: ONLY update custom fields
+            const preparedCustomFields = prepareCustomFields(customFields)
+
+            const results = await Promise.allSettled(
+              issues.map((issue) =>
+                jiraUtil.updateCustomFields(issue.key, preparedCustomFields)
+              )
+            )
+
+            const successful = results.filter((r) => r.status === 'fulfilled').length
+            const failed = results.filter((r) => r.status === 'rejected')
+
+            logger.info('Production PR updates completed', {
+              prUrl,
+              successful,
+              failed: failed.length,
+            })
+          } else {
+            logger.info('No issues found for PR', { prUrl })
+          }
         } catch (error) {
           logger.error('Error updating issues from PR to production', {
             prUrl,
