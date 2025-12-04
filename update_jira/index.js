@@ -650,6 +650,18 @@ function extractPrNumber (commitMessage) {
 /**
  * Fetch commits from GitHub API and extract issue keys, stopping when consecutive
  * tickets are already in "Done" status (smart iteration to handle out-of-band releases)
+ *
+ * NOTE: Alternative future optimization suggested by Damian:
+ * - Store SHA of last successful deployment
+ * - Use GitHub API compare endpoint: GET /repos/{owner}/{repo}/compare/{base}...{head}
+ * - Only process commits since last deployment
+ * - Would be more efficient but requires storing deployment state
+ *
+ * Current approach prioritizes reliability over speed with:
+ * - Batch processing with delays between batches
+ * - Smart early termination when consecutive tickets are already in target status
+ * - Safety limits to prevent runaway processing
+ *
  * @param {Object} octokit - Octokit instance
  * @param {Object} jiraUtil - Jira utility instance
  * @param {string} owner - Repository owner
@@ -806,6 +818,12 @@ async function fetchCommitsAndExtractIssues (octokit, jiraUtil, owner, repo, bra
         logger.info('Reached end of commit history')
         shouldContinue = false
         break
+      }
+
+      // Add small delay between batches to avoid rate limiting (reliability over speed)
+      if (shouldContinue) {
+        logger.debug('Waiting 1 second before next batch to avoid rate limits')
+        await new Promise(resolve => setTimeout(resolve, 1000))
       }
     }
 
