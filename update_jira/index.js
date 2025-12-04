@@ -743,17 +743,54 @@ async function fetchCommitsAndExtractIssues (octokit, jiraUtil, owner, repo, bra
 
       // Check status of extracted issues in Jira
       if (batchIssueKeys.length > 0) {
-        for (const issueKey of batchIssueKeys) {
+        for (let i = 0; i < batchIssueKeys.length; i++) {
+          const issueKey = batchIssueKeys[i]
+
           try {
-            // Fetch issue status from Jira
-            const issueResponse = await jiraUtil.request(`/issue/${issueKey}?fields=status`)
-            const issueData = await issueResponse.json()
+            // Fetch issue status from Jira with retry logic
+            let issueData = null
+            let retryCount = 0
+            const maxRetries = 3
+
+            while (retryCount < maxRetries) {
+              try {
+                const issueResponse = await jiraUtil.request(`/issue/${issueKey}?fields=status`)
+                issueData = await issueResponse.json()
+                break // Success, exit retry loop
+              } catch (apiError) {
+                retryCount++
+                if (retryCount >= maxRetries) {
+                  throw apiError // Re-throw if all retries failed
+                }
+
+                // Check if it's a transient error (5xx or rate limit)
+                const isTransient = apiError.statusCode >= 500 || apiError.statusCode === 429
+                if (isTransient) {
+                  const delay = 1000 * Math.pow(2, retryCount) // Exponential backoff: 2s, 4s
+                  logger.warn('Transient error, retrying', {
+                    issueKey,
+                    statusCode: apiError.statusCode,
+                    retryCount,
+                    retryAfter: delay,
+                  })
+                  await new Promise(resolve => setTimeout(resolve, delay))
+                } else {
+                  throw apiError // Non-transient error, don't retry
+                }
+              }
+            }
+
+            if (!issueData) {
+              throw new Error('Failed to fetch issue after retries')
+            }
+
             const currentStatus = issueData.fields.status.name
 
             logger.debug('Checked issue status', {
               issueKey,
               currentStatus,
               targetStatus,
+              consecutiveCount: consecutiveDoneCount,
             })
 
             if (currentStatus === targetStatus) {
@@ -793,12 +830,31 @@ async function fetchCommitsAndExtractIssues (octokit, jiraUtil, owner, repo, bra
               })
             }
           } catch (error) {
-            // If we can't fetch the issue (doesn't exist, no permission, etc.), skip it
-            logger.warn('Could not fetch issue status, skipping', {
-              issueKey,
-              error: error.message,
-            })
-            consecutiveDoneCount = 0 // Reset counter on error
+            // Distinguish between "not found" and other errors
+            const isNotFound = error.statusCode === 404 || error.message?.includes('Issue Does Not Exist')
+
+            if (isNotFound) {
+              logger.warn('Issue not found in Jira, skipping', {
+                issueKey,
+                error: error.message,
+              })
+              // Don't add to update list, but also don't break consecutive counter
+              // (might be a deleted issue or wrong project)
+            } else {
+              // Other error (permission, network, etc.)
+              logger.error('Error checking issue status, skipping', {
+                issueKey,
+                error: error.message,
+                statusCode: error.statusCode,
+              })
+              // Don't reset counter - might be transient issue
+            }
+          }
+
+          // Add delay between Jira API calls to respect rate limits (10 req/sec)
+          // 150ms delay = ~6.6 requests/second (well under limit)
+          if (i < batchIssueKeys.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 150))
           }
         }
       }
