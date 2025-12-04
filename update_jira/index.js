@@ -9,7 +9,6 @@
 
 require('dotenv').config()
 const core = require('@actions/core')
-const github = require('@actions/github')
 const { Octokit } = require('@octokit/rest')
 const Jira = require('./../utils/jira')
 const fs = require('node:fs')
@@ -72,9 +71,8 @@ const ACTION_CONSTANTS = {
   },
 
   COMMIT_HISTORY: {
-    PRODUCTION_RANGE: 'HEAD~100',
-    STAGING_RANGE: 'HEAD~50',
-    HEAD: 'HEAD',
+    PRODUCTION_MAX_COMMITS: 200,
+    STAGING_MAX_COMMITS: 200,
   },
 
   VALIDATION: {
@@ -103,9 +101,7 @@ const ACTION_CONSTANTS = {
 const STATUS_MAP = {
   master: {
     status: ACTION_CONSTANTS.JIRA_STATUSES.DONE,
-    transitionFields: {
-      resolution: 'Done',
-    },
+    transitionFields: {},
     customFields: {
       [ACTION_CONSTANTS.CUSTOM_FIELDS.PRODUCTION_TIMESTAMP]: () => new Date(),
       [ACTION_CONSTANTS.CUSTOM_FIELDS.RELEASE_ENVIRONMENT]: { id: ACTION_CONSTANTS.RELEASE_ENV_IDS.PRODUCTION },
@@ -113,9 +109,7 @@ const STATUS_MAP = {
   },
   main: {
     status: ACTION_CONSTANTS.JIRA_STATUSES.DONE,
-    transitionFields: {
-      resolution: 'Done',
-    },
+    transitionFields: {},
     customFields: {
       [ACTION_CONSTANTS.CUSTOM_FIELDS.PRODUCTION_TIMESTAMP]: () => new Date(),
       [ACTION_CONSTANTS.CUSTOM_FIELDS.RELEASE_ENVIRONMENT]: { id: ACTION_CONSTANTS.RELEASE_ENV_IDS.PRODUCTION },
@@ -123,9 +117,7 @@ const STATUS_MAP = {
   },
   staging: {
     status: ACTION_CONSTANTS.JIRA_STATUSES.DEPLOYED_TO_STAGING,
-    transitionFields: {
-      resolution: 'Done',
-    },
+    transitionFields: {},
     customFields: {
       [ACTION_CONSTANTS.CUSTOM_FIELDS.STAGING_TIMESTAMP]: () => new Date(),
       [ACTION_CONSTANTS.CUSTOM_FIELDS.RELEASE_ENVIRONMENT]: { id: ACTION_CONSTANTS.RELEASE_ENV_IDS.STAGING },
@@ -653,6 +645,268 @@ function extractPrNumber (commitMessage) {
 
   const prMatch = commitMessage.match(ACTION_CONSTANTS.VALIDATION.PR_NUMBER_PATTERN)
   return prMatch ? prMatch[1] : null
+}
+
+/**
+ * Fetch commits from GitHub API and extract issue keys, stopping when consecutive
+ * tickets are already in "Done" status (smart iteration to handle out-of-band releases)
+ *
+ * NOTE: Alternative future optimization suggested by Damian:
+ * - Store SHA of last successful deployment
+ * - Use GitHub API compare endpoint: GET /repos/{owner}/{repo}/compare/{base}...{head}
+ * - Only process commits since last deployment
+ * - Would be more efficient but requires storing deployment state
+ *
+ * Current approach prioritizes reliability over speed with:
+ * - Batch processing with delays between batches
+ * - Smart early termination when consecutive tickets are already in target status
+ * - Safety limits to prevent runaway processing
+ *
+ * @param {Object} octokit - Octokit instance
+ * @param {Object} jiraUtil - Jira utility instance
+ * @param {string} owner - Repository owner
+ * @param {string} repo - Repository name
+ * @param {string} branch - Branch name
+ * @param {string} targetStatus - Target status to check for (e.g., "Done", "Deployed to Staging")
+ * @param {number} consecutiveDoneThreshold - Number of consecutive "done" tickets to stop at (default: 5)
+ * @returns {Promise<string[]>} Array of unique issue keys that need updating
+ */
+async function fetchCommitsAndExtractIssues (octokit, jiraUtil, owner, repo, branch, targetStatus, consecutiveDoneThreshold = 5) {
+  const finishOp = logger.startOperation('fetchCommitsAndExtractIssues', {
+    owner,
+    repo,
+    branch,
+    targetStatus,
+    consecutiveDoneThreshold,
+  })
+
+  try {
+    logger.info('Fetching commits with smart iteration (stops at consecutive done tickets)', {
+      owner,
+      repo,
+      branch,
+      targetStatus,
+      consecutiveDoneThreshold,
+    })
+
+    const allIssueKeys = []
+    let page = 1
+    let consecutiveDoneCount = 0
+    let totalCommitsChecked = 0
+    let shouldContinue = true
+    const perPage = 100 // GitHub API max per page
+
+    while (shouldContinue) {
+      // Fetch commits page by page
+      logger.debug('Fetching commits page', { page, perPage })
+
+      const { data: commits } = await fetchGitHubDataWithRetry(
+        async () => octokit.rest.repos.listCommits({
+          owner,
+          repo,
+          sha: branch,
+          per_page: perPage,
+          page,
+        }),
+        {}
+      )
+
+      if (commits.length === 0) {
+        logger.info('No more commits to fetch')
+        shouldContinue = false
+        break
+      }
+
+      totalCommitsChecked += commits.length
+
+      // Extract issue keys from this batch of commits
+      const batchIssueKeys = []
+      for (const commit of commits) {
+        const message = commit.commit.message
+        const matches = message.match(ACTION_CONSTANTS.VALIDATION.ISSUE_KEY_EXTRACT_PATTERN)
+
+        if (matches) {
+          for (const key of matches) {
+            if (isValidIssueKey(key) && !batchIssueKeys.includes(key) && !allIssueKeys.includes(key)) {
+              batchIssueKeys.push(key)
+            }
+          }
+        }
+      }
+
+      logger.debug('Extracted issues from batch', {
+        page,
+        commitsInBatch: commits.length,
+        issuesInBatch: batchIssueKeys.length,
+        issues: batchIssueKeys,
+      })
+
+      // Check status of extracted issues in Jira
+      if (batchIssueKeys.length > 0) {
+        for (let i = 0; i < batchIssueKeys.length; i++) {
+          const issueKey = batchIssueKeys[i]
+
+          try {
+            // Fetch issue status from Jira with retry logic
+            let issueData = null
+            let retryCount = 0
+            const maxRetries = 3
+
+            while (retryCount < maxRetries) {
+              try {
+                const issueResponse = await jiraUtil.request(`/issue/${issueKey}?fields=status`)
+                issueData = await issueResponse.json()
+                break // Success, exit retry loop
+              } catch (apiError) {
+                retryCount++
+                if (retryCount >= maxRetries) {
+                  throw apiError // Re-throw if all retries failed
+                }
+
+                // Check if it's a transient error (5xx or rate limit)
+                const isTransient = apiError.statusCode >= 500 || apiError.statusCode === 429
+                if (isTransient) {
+                  const delay = 1000 * Math.pow(2, retryCount) // Exponential backoff: 2s, 4s
+                  logger.warn('Transient error, retrying', {
+                    issueKey,
+                    statusCode: apiError.statusCode,
+                    retryCount,
+                    retryAfter: delay,
+                  })
+                  await new Promise(resolve => setTimeout(resolve, delay))
+                } else {
+                  throw apiError // Non-transient error, don't retry
+                }
+              }
+            }
+
+            if (!issueData) {
+              throw new Error('Failed to fetch issue after retries')
+            }
+
+            const currentStatus = issueData.fields.status.name
+
+            logger.debug('Checked issue status', {
+              issueKey,
+              currentStatus,
+              targetStatus,
+              consecutiveCount: consecutiveDoneCount,
+            })
+
+            if (currentStatus === targetStatus) {
+              // Issue is already in target status
+              consecutiveDoneCount++
+              logger.debug('Issue already in target status', {
+                issueKey,
+                currentStatus,
+                consecutiveDoneCount,
+              })
+
+              // Stop if we've found enough consecutive done tickets
+              if (consecutiveDoneCount >= consecutiveDoneThreshold) {
+                logger.info('Found consecutive tickets already in target status, stopping iteration', {
+                  consecutiveDoneCount,
+                  threshold: consecutiveDoneThreshold,
+                  lastIssue: issueKey,
+                })
+
+                finishOp('success', {
+                  commitsChecked: totalCommitsChecked,
+                  issueKeysFound: allIssueKeys.length,
+                  stoppedEarly: true,
+                  consecutiveDone: consecutiveDoneCount,
+                })
+
+                return allIssueKeys
+              }
+            } else {
+              // Issue is NOT in target status, needs updating
+              consecutiveDoneCount = 0 // Reset counter
+              allIssueKeys.push(issueKey)
+              logger.debug('Issue needs updating', {
+                issueKey,
+                currentStatus,
+                targetStatus,
+              })
+            }
+          } catch (error) {
+            // Distinguish between "not found" and other errors
+            const isNotFound = error.statusCode === 404 || error.message?.includes('Issue Does Not Exist')
+
+            if (isNotFound) {
+              logger.warn('Issue not found in Jira, skipping', {
+                issueKey,
+                error: error.message,
+              })
+              // Don't add to update list, but also don't break consecutive counter
+              // (might be a deleted issue or wrong project)
+            } else {
+              // Other error (permission, network, etc.)
+              logger.error('Error checking issue status, skipping', {
+                issueKey,
+                error: error.message,
+                statusCode: error.statusCode,
+              })
+              // Don't reset counter - might be transient issue
+            }
+          }
+
+          // Add delay between Jira API calls to respect rate limits (10 req/sec)
+          // 150ms delay = ~6.6 requests/second (well under limit)
+          if (i < batchIssueKeys.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 150))
+          }
+        }
+      }
+
+      // Move to next page
+      page++
+
+      // Safety limit: stop after 1000 commits (10 pages)
+      if (totalCommitsChecked >= 1000) {
+        logger.warn('Reached safety limit of 1000 commits, stopping iteration')
+        shouldContinue = false
+        break
+      }
+
+      // If this batch had fewer commits than requested, we've reached the end
+      if (commits.length < perPage) {
+        logger.info('Reached end of commit history')
+        shouldContinue = false
+        break
+      }
+
+      // Add small delay between batches to avoid rate limiting (reliability over speed)
+      if (shouldContinue) {
+        logger.debug('Waiting 1 second before next batch to avoid rate limits')
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+    }
+
+    finishOp('success', {
+      commitsChecked: totalCommitsChecked,
+      issueKeysFound: allIssueKeys.length,
+      stoppedEarly: false,
+    })
+
+    logger.info('Smart iteration completed', {
+      commitsChecked: totalCommitsChecked,
+      issueKeysFound: allIssueKeys.length,
+      issueKeys: allIssueKeys,
+    })
+
+    return allIssueKeys
+  } catch (error) {
+    finishOp('error', { error: error.message })
+    logger.error('Failed to fetch commits from GitHub API', {
+      owner,
+      repo,
+      branch,
+      error: error.message,
+    })
+    // Return empty array on error, don't throw
+    return []
+  }
 }
 
 // ============================================================================
@@ -1231,29 +1485,53 @@ async function handlePushEvent (branch, jiraUtil, githubRepository, githubToken)
       logger.info('Production deployment detected', { branch })
 
       try {
-        const commitHistoryIssues = await jiraUtil.getIssueKeysFromCommitHistory(
-          ACTION_CONSTANTS.COMMIT_HISTORY.PRODUCTION_RANGE,
-          ACTION_CONSTANTS.COMMIT_HISTORY.HEAD
+        // Smart iteration: fetch commits and stop when we find 5 consecutive tickets already in "Done"
+        const commitHistoryIssues = await fetchCommitsAndExtractIssues(
+          octokit,
+          jiraUtil,
+          owner,
+          repo,
+          branch,
+          targetStatus, // "Done"
+          5 // Stop after 5 consecutive "Done" tickets
         )
 
         if (commitHistoryIssues.length > 0) {
           logger.info('Found issues in production commit history', {
             issueCount: commitHistoryIssues.length,
+            issueKeys: commitHistoryIssues,
           })
 
-          const updateResults = await updateIssuesFromCommitHistory(
-            jiraUtil,
-            commitHistoryIssues,
-            targetStatus,
-            ACTION_CONSTANTS.EXCLUDED_STATES,
-            transitionFields,
-            customFields
+          // For production: ONLY update custom fields, Jira automation handles status transition
+          // Setting Production Release Timestamp + Release Environment triggers auto-transition to Done
+          const preparedCustomFields = prepareCustomFields(customFields)
+
+          logger.info('Updating production custom fields (Jira automation will handle status transition)', {
+            issueCount: commitHistoryIssues.length,
+            fields: Object.keys(preparedCustomFields),
+          })
+
+          const results = await Promise.allSettled(
+            commitHistoryIssues.map((issueKey) =>
+              jiraUtil.updateCustomFields(issueKey, preparedCustomFields)
+            )
           )
 
+          const successful = results.filter((r) => r.status === 'fulfilled').length
+          const failed = results.filter((r) => r.status === 'rejected')
+
           logger.info('Production deployment completed', {
-            successful: updateResults.successful,
-            failed: updateResults.failed,
+            successful,
+            failed: failed.length,
+            issueKeys: commitHistoryIssues,
           })
+
+          if (failed.length > 0) {
+            logger.warn('Some production updates failed', {
+              failedCount: failed.length,
+              errors: failed.map(r => r.reason?.message).slice(0, 5),
+            })
+          }
         } else {
           logger.info('No Jira issues found in production commit history')
         }
@@ -1269,13 +1547,47 @@ async function handlePushEvent (branch, jiraUtil, githubRepository, githubToken)
         logger.info('Processing direct PR merge to production', { prUrl })
 
         try {
-          await updateIssuesByPR(
-            jiraUtil,
-            prUrl,
-            targetStatus,
-            transitionFields,
-            customFields
-          )
+          // Search for issues mentioning this PR
+          const jql = `text ~ "${prUrl}"`
+          const response = await jiraUtil.request('/search', {
+            method: 'POST',
+            body: JSON.stringify({
+              jql,
+              fields: [ 'key', 'summary', 'status' ],
+              maxResults: ACTION_CONSTANTS.GITHUB_API.MAX_RESULTS,
+            }),
+          })
+
+          const data = await response.json()
+          const issues = data.issues || []
+
+          if (issues.length > 0) {
+            logger.info('Found issues for PR in production', {
+              prUrl,
+              issueCount: issues.length,
+              issueKeys: issues.map(i => i.key),
+            })
+
+            // For production: ONLY update custom fields
+            const preparedCustomFields = prepareCustomFields(customFields)
+
+            const results = await Promise.allSettled(
+              issues.map((issue) =>
+                jiraUtil.updateCustomFields(issue.key, preparedCustomFields)
+              )
+            )
+
+            const successful = results.filter((r) => r.status === 'fulfilled').length
+            const failed = results.filter((r) => r.status === 'rejected')
+
+            logger.info('Production PR updates completed', {
+              prUrl,
+              successful,
+              failed: failed.length,
+            })
+          } else {
+            logger.info('No issues found for PR', { prUrl })
+          }
         } catch (error) {
           logger.error('Error updating issues from PR to production', {
             prUrl,
@@ -1293,8 +1605,15 @@ async function handlePushEvent (branch, jiraUtil, githubRepository, githubToken)
       logger.info('Staging deployment detected', { branch })
 
       try {
-        const commitHistoryIssues = await jiraUtil.extractIssueKeysFromGitHubContext(
-          github.context
+        // Smart iteration: fetch commits and stop when we find 5 consecutive tickets already in "Deployed to Staging"
+        const commitHistoryIssues = await fetchCommitsAndExtractIssues(
+          octokit,
+          jiraUtil,
+          owner,
+          repo,
+          branch,
+          targetStatus, // "Deployed to Staging"
+          5 // Stop after 5 consecutive "Deployed to Staging" tickets
         )
 
         if (commitHistoryIssues.length > 0) {
